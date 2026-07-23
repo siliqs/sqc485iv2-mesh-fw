@@ -29,16 +29,25 @@ jobs:
           pip install -U platformio
           pio --version
 
-      - name: Build firmware (Heltec HT62 env for now)
+      # Build the SQC485Iv2 PRODUCT env — NOT the generic heltec-ht62 env, which
+      # lacks -D SQC485IV2, the TW/DTS radio defaults, the src/siliqs include path
+      # (SQ_FW_VERSION) and USB-CDC console. A heltec-ht62 build would ship a plain
+      # Meshtastic node on LongFast.
+      # NOTE: this CI build does NOT inject the factory channel PSK
+      # (SQ_FACTORY_CH1_PSK_HEX / SQ_FACTORY_CH1_NAME are never in this repo), so the
+      # artifact here has no baked factory channel. The bins published to the flasher
+      # are built with those env vars set locally — treat CI output as a build check,
+      # not the shippable factory image, until the PSK is wired in via Actions secrets.
+      - name: Build firmware (SQC485Iv2 product env)
         run: |
-          pio run -e heltec-ht62-esp32c3-sx1262
+          pio run -e sqc485iv2-esp32c3-sx1262
 
       - name: Collect artifacts
         run: |
           set -euo pipefail
           OUT=dist
           mkdir -p "$OUT"
-          BUILD_DIR=.pio/build/heltec-ht62-esp32c3-sx1262
+          BUILD_DIR=.pio/build/sqc485iv2-esp32c3-sx1262
           cp -v "$BUILD_DIR"/*.bin "$OUT"/ || true
           cp -v "$BUILD_DIR"/*.factory.bin "$OUT"/ || true
           # Some builds only generate firmware-*.bin; keep both patterns

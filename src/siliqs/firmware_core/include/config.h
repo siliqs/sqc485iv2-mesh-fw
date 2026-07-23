@@ -15,7 +15,7 @@
    features. Bump SQ_FW_VERSION on every firmware release; bump SQ_CAP_PROTO only if this
    reply format itself changes. proto 2 = product_id appended after fw. */
 #define SQ_CAP_PROTO      2
-#define SQ_FW_VERSION     "1.2.8"
+#define SQ_FW_VERSION     "1.3.2"
 /* Which Siliqs product this board is — Meshtastic's HardwareModel has no per-vendor value
    (custom boards all report PRIVATE_HW), so the configurator reads this to label the node. */
 #if defined(SQC485IV2)
