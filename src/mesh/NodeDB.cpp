@@ -624,6 +624,21 @@ void NodeDB::installDefaultConfig(bool preserveKey = false)
 #else
     config.lora.modem_preset = meshtastic_Config_LoRaConfig_ModemPreset_LONG_FAST;
 #endif
+#ifdef SQC485IV2
+    // Siliqs SQC485Iv2: ship the Taiwan DTS-certified radio profile out-of-box so the node
+    // transmits inside the tested envelope on first boot (single fixed 922.5 MHz channel,
+    // BW500/SF9/CR4:5). This is a factory *default* — a user can still change it via the app;
+    // the certified profile is documented so field units are not accidentally shipped on
+    // LongFast (BW250/SF11) or a different frequency. No stock preset is BW500/SF9, so this
+    // must use the explicit (use_preset=false) path.
+    // NOTE: Channels::initDefaultLoraConfig() runs AFTER this and is the LoRa-config
+    // authority — the same profile is applied there too. Keep both in sync.
+    config.lora.use_preset = false;
+    config.lora.bandwidth = 500;   // 500 kHz (bwKHzToCode(500)==500)
+    config.lora.spread_factor = 9; // SF9
+    config.lora.coding_rate = 5;   // 4/5
+    config.lora.override_frequency = 922.5f; // MHz, exact center (within TW 920-925)
+#endif
     config.lora.hop_limit = HOP_RELIABLE;
 #ifdef USERPREFS_CONFIG_LORA_IGNORE_MQTT
     config.lora.ignore_mqtt = USERPREFS_CONFIG_LORA_IGNORE_MQTT;
@@ -707,6 +722,14 @@ void NodeDB::installDefaultConfig(bool preserveKey = false)
 #else
     // default to bluetooth capability of platform as default
     config.bluetooth.enabled = true;
+#endif
+#ifdef SQC485IV2
+    // Siliqs SQC485Iv2 factory default: ship with Bluetooth OFF. A fielded RS485 gateway
+    // shouldn't advertise an open BLE reconfig surface out-of-box, and leaving BLE off on
+    // first boot also sidesteps the weak-supply BLE-bring-up brownout. BLE stays COMPILED
+    // IN (this is a runtime default, NOT MESHTASTIC_EXCLUDE_BLUETOOTH) so it can be turned
+    // back on from the configurator over USB whenever a deployment wants BLE provisioning.
+    config.bluetooth.enabled = false;
 #endif
     config.bluetooth.fixed_pin = defaultBLEPin;
 

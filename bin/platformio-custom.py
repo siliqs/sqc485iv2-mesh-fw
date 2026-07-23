@@ -234,6 +234,31 @@ for pref in userPrefs:
     else:
         pref_flags.append("-D" + pref + "=" + env.StringifyMacro(userPrefs[pref]) + "")
 
+# Factory channel injection: the channel PSK is supplied at build time via
+# environment variables and is NEVER stored in this (public) repo.
+# Set SQ_FACTORY_CH1_NAME + SQ_FACTORY_CH1_PSK_HEX (hex string, no separators) to
+# bake a secondary channel into the image. If unset, this is a no-op (plain build).
+# The values are written to a generated header that is force-included; this keeps
+# the brace-enclosed PSK array in C source (an array-valued -D macro gets mangled
+# by the shell's brace expansion).
+import os as _os
+_ch1_name = _os.environ.get("SQ_FACTORY_CH1_NAME")
+_ch1_psk_hex = _os.environ.get("SQ_FACTORY_CH1_PSK_HEX")
+if _ch1_name and _ch1_psk_hex:
+    _psk_arr = "{" + ", ".join(
+        "0x" + _ch1_psk_hex[i:i + 2] for i in range(0, len(_ch1_psk_hex), 2)
+    ) + "}"
+    _hdr_dir = env.subst("$BUILD_DIR")
+    _os.makedirs(_hdr_dir, exist_ok=True)
+    _hdr = _os.path.join(_hdr_dir, "sq_factory_prefs.h")
+    with open(_hdr, "w") as _f:
+        _f.write("#pragma once\n")
+        _f.write("#define USERPREFS_CHANNELS_TO_WRITE 2\n")
+        _f.write('#define USERPREFS_CHANNEL_1_NAME "%s"\n' % _ch1_name)
+        _f.write("#define USERPREFS_CHANNEL_1_PSK %s\n" % _psk_arr)
+    pref_flags += ["-include", _hdr]
+    print("Factory channel '%s' baked via %s (%d-byte PSK from env)" % (_ch1_name, _hdr, len(_ch1_psk_hex) // 2))
+
 # General options that are passed to the C and C++ compilers
 # Calculate unix epoch for current day (midnight)
 current_date = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)

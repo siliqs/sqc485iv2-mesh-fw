@@ -7,6 +7,9 @@
 #if !MESHTASTIC_EXCLUDE_REPLYBOT
 #include "ReplyBotModule.h"
 #endif
+#ifdef SQC485IV2
+#include "modules/ModbusModule.h"
+#endif
 #if !MESHTASTIC_EXCLUDE_PKI
 #include "KeyVerificationModule.h"
 #endif
@@ -177,6 +180,12 @@ void setupModules()
 #endif
     // Example: Put your module here
     // new ReplyModule();
+#ifdef SQC485IV2
+    // Config-driven RS485 Modbus -> mesh (raw-forward on portnum 256), reusing the
+    // shared firmware_core engine. Per-deployment behaviour comes from the config
+    // blob rather than being compiled in.
+    modbusModule = new ModbusModule();
+#endif
 #if HAS_SCREEN && !MESHTASTIC_EXCLUDE_CANNEDMESSAGES
     if (config.display.displaymode != meshtastic_Config_DisplayConfig_DisplayMode_COLOR) {
         cannedMessageModule = new CannedMessageModule();

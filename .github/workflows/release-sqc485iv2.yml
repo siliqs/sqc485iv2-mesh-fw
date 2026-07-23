@@ -1,0 +1,53 @@
+name: Release (SQC485Iv2)
+
+on:
+  push:
+    tags:
+      - "sqc485iv2-v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install PlatformIO
+        run: |
+          python -m pip install -U pip
+          pip install -U platformio
+          pio --version
+
+      - name: Build firmware (Heltec HT62 env for now)
+        run: |
+          pio run -e heltec-ht62-esp32c3-sx1262
+
+      - name: Collect artifacts
+        run: |
+          set -euo pipefail
+          OUT=dist
+          mkdir -p "$OUT"
+          BUILD_DIR=.pio/build/heltec-ht62-esp32c3-sx1262
+          cp -v "$BUILD_DIR"/*.bin "$OUT"/ || true
+          cp -v "$BUILD_DIR"/*.factory.bin "$OUT"/ || true
+          # Some builds only generate firmware-*.bin; keep both patterns
+          ls -la "$OUT"
+          (cd "$OUT" && sha256sum * > SHA256SUMS.txt)
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*
+          generate_release_notes: true

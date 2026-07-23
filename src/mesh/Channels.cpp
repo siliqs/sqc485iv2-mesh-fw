@@ -93,6 +93,22 @@ void Channels::initDefaultLoraConfig()
 #ifdef USERPREFS_LORACONFIG_CHANNEL_NUM
     loraConfig.channel_num = USERPREFS_LORACONFIG_CHANNEL_NUM;
 #endif
+#ifdef SQC485IV2
+    // Siliqs SQC485Iv2: ship the Taiwan DTS-certified radio profile out of the box
+    // (single fixed 922.5 MHz channel, BW500 / SF9 / CR4:5). This MUST be applied here
+    // — initDefaultLoraConfig() is the LoRa-config authority and runs AFTER
+    // NodeDB::installDefaultConfig(), so the copy there was overwritten by the
+    // use_preset=true default above (node shipped on LongFast BW250 instead). Factory
+    // default only; the user can still change it via the app. No stock preset is
+    // BW500/SF9, hence the explicit use_preset=false path.
+    loraConfig.use_preset = false;
+    loraConfig.bandwidth = 500;              // 500 kHz
+    loraConfig.spread_factor = 9;            // SF9
+    loraConfig.coding_rate = 5;              // 4/5
+    loraConfig.override_frequency = 922.5f;  // MHz, exact center (within TW 920-925)
+    // (tx_power left at 0 = region max ~22 dBm for full range. A weak-supply board that
+    //  brownouts on TX can lower this via the app, or use a dedicated low-power build.)
+#endif
 }
 
 bool Channels::ensureLicensedOperation()
