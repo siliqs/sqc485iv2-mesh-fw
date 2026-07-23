@@ -106,8 +106,15 @@ void Channels::initDefaultLoraConfig()
     loraConfig.spread_factor = 9;            // SF9
     loraConfig.coding_rate = 5;              // 4/5
     loraConfig.override_frequency = 922.5f;  // MHz, exact center (within TW 920-925)
-    // (tx_power left at 0 = region max ~22 dBm for full range. A weak-supply board that
-    //  brownouts on TX can lower this via the app, or use a dedicated low-power build.)
+    // Pin tx_power to the CERTIFIED value instead of leaving it 0 (=auto).
+    // With 0, RadioInterface writes the region limit back into config (TW -> 27 dBm,
+    // see RadioInterface.cpp "Set final tx_power back onto config"), and the SX1262
+    // cap to 22 dBm is only applied later inside the chip driver. The device would
+    // then REPORT tx_power=27 while actually emitting 22 dBm — which reads like
+    // 500 mW to anyone inspecting the config during type approval.
+    // 22 dBm is the SX1262 ceiling anyway, so pinning it changes no emitted power;
+    // it just makes declared == reported == emitted.
+    loraConfig.tx_power = 22;                // dBm conducted (certified value)
 #endif
 }
 

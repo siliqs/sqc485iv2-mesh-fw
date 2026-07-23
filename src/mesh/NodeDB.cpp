@@ -638,6 +638,7 @@ void NodeDB::installDefaultConfig(bool preserveKey = false)
     config.lora.spread_factor = 9; // SF9
     config.lora.coding_rate = 5;   // 4/5
     config.lora.override_frequency = 922.5f; // MHz, exact center (within TW 920-925)
+    config.lora.tx_power = 22;               // dBm conducted (certified value; see Channels.cpp)
 #endif
     config.lora.hop_limit = HOP_RELIABLE;
 #ifdef USERPREFS_CONFIG_LORA_IGNORE_MQTT
