@@ -18,6 +18,29 @@ enum {
    asked for, which is why the reply length cannot be assumed up front. */
 #define SQ_MB_EXCEPTION_FRAME_LEN 5
 
+/* Exception codes, MODBUS Application Protocol V1.1b3 §7. The spec itself splits
+   these into "your request is wrong" and "ask me again later", which is what
+   decides whether retrying is worth the bus time. */
+#define SQ_MB_EXC_ILLEGAL_FUNCTION 0x01
+#define SQ_MB_EXC_ILLEGAL_ADDRESS 0x02
+#define SQ_MB_EXC_ILLEGAL_VALUE 0x03
+#define SQ_MB_EXC_DEVICE_FAILURE 0x04
+#define SQ_MB_EXC_ACKNOWLEDGE 0x05
+#define SQ_MB_EXC_DEVICE_BUSY 0x06
+#define SQ_MB_EXC_MEMORY_PARITY 0x08
+#define SQ_MB_EXC_GATEWAY_PATH 0x0A
+#define SQ_MB_EXC_GATEWAY_NO_RESPONSE 0x0B
+
+/* True when repeating the identical request could plausibly succeed.
+
+   A slave that answers "illegal data address" will answer it again no matter how
+   many times it is asked — that is a wrong poll plan, and retrying only spends
+   bus time and, on a battery node, wake time. "Device busy" or "acknowledge"
+   mean the opposite: the request was understood and the slave wants to be asked
+   again. Codes this firmware does not recognise are treated as transient, so an
+   unfamiliar slave still gets the benefit of the retry budget. */
+bool modbus_exception_is_transient(uint8_t exception_code);
+
 /* Standard Modbus RTU CRC16. */
 uint16_t modbus_crc16(const uint8_t *buf, size_t len);
 

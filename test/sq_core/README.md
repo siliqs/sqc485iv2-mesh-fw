@@ -100,10 +100,15 @@ wrong. Writing the awkward behaviour down first is what made it safe to change:
   `test_poll_drops_polls_that_exceed_the_mesh_payload`, because it remains the
   backstop.
 
-One limitation is still pinned as-is: an exception reply consumes the full retry
-budget (`test_modbus_exception_still_consumes_retries`). The slave answered, so
-retrying will not help, but the engine cannot tell a wrong register map from a
-transiently busy device.
+- **Every exception consumed the whole retry budget.** Once exceptions were
+  visible at all, the next question was whether repeating the request could
+  help — and that is the slave's own answer to give. The Modbus spec splits its
+  exception codes into "your request is wrong" (illegal function / address /
+  value, gateway path) and "ask me again later" (busy, acknowledge, device
+  failure). `modbus_exception_is_transient()` follows that split, so a wrong
+  register in the poll plan now costs one frame instead of four. Unrecognised
+  codes are treated as transient, so an unfamiliar slave keeps the benefit of
+  the doubt.
 
 ## Adding a test
 

@@ -16,6 +16,22 @@ uint16_t modbus_crc16(const uint8_t *buf, size_t len)
     return crc;
 }
 
+bool modbus_exception_is_transient(uint8_t exception_code)
+{
+    switch (exception_code) {
+    case SQ_MB_EXC_ILLEGAL_FUNCTION: /* this slave does not implement FC3/FC4  */
+    case SQ_MB_EXC_ILLEGAL_ADDRESS:  /* the register is not there — wrong plan */
+    case SQ_MB_EXC_ILLEGAL_VALUE:    /* the register count is out of range     */
+    case SQ_MB_EXC_GATEWAY_PATH:     /* the gateway is misconfigured           */
+        return false;
+    default:
+        /* 0x04 device failure, 0x05 acknowledge, 0x06 busy, 0x08 memory parity,
+           0x0B gateway target silent — and anything unrecognised. All of these
+           can clear on their own, so they keep the retry budget. */
+        return true;
+    }
+}
+
 /* Read exactly `want` bytes, or give up.
 
    hal_serial_read() spins until it has filled the buffer or the timeout expires —
@@ -110,7 +126,13 @@ size_t modbus_read_raw(const sq_modbus_t *mb, uint8_t slave, uint8_t func, uint1
             } else if (body[0] != slave) {
                 *err = SQ_MB_ERR_MISMATCH;
             } else if (body[1] & 0x80) {
+                /* The slave answered — it just refused. Whether asking again can
+                   help is the slave's own answer to give, so honour it rather
+                   than spending the whole retry budget on a request that is
+                   wrong by construction. */
                 *err = SQ_MB_ERR_EXCEPTION;
+                if (!modbus_exception_is_transient(body[2]))
+                    return 0;
             } else if (body[1] != func) {
                 *err = SQ_MB_ERR_MISMATCH;
             } else if (body[2] != 2 * reg_count) {

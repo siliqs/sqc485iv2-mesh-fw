@@ -208,20 +208,94 @@ void test_modbus_reports_exception_replies(void)
     }
 }
 
-/* Retrying an exception is pointless — the slave answered, it just said no — but
- * the engine cannot know the register map is wrong rather than transiently busy,
- * so it still uses its attempts. Pinned so the cost is visible. */
-void test_modbus_exception_still_consumes_retries(void)
+/* Which refusals are worth repeating is the slave's own answer to give — the
+ * Modbus spec splits its exception codes into "your request is wrong" and "ask
+ * me again later", and the engine follows that split. */
+void test_modbus_exception_transience_classification(void)
+{
+    /* Wrong by construction: repeating the identical request cannot help. */
+    ASSERT_FALSE(modbus_exception_is_transient(SQ_MB_EXC_ILLEGAL_FUNCTION));
+    ASSERT_FALSE(modbus_exception_is_transient(SQ_MB_EXC_ILLEGAL_ADDRESS));
+    ASSERT_FALSE(modbus_exception_is_transient(SQ_MB_EXC_ILLEGAL_VALUE));
+    ASSERT_FALSE(modbus_exception_is_transient(SQ_MB_EXC_GATEWAY_PATH));
+
+    /* The slave understood and wants to be asked again. */
+    ASSERT_TRUE(modbus_exception_is_transient(SQ_MB_EXC_DEVICE_FAILURE));
+    ASSERT_TRUE(modbus_exception_is_transient(SQ_MB_EXC_ACKNOWLEDGE));
+    ASSERT_TRUE(modbus_exception_is_transient(SQ_MB_EXC_DEVICE_BUSY));
+    ASSERT_TRUE(modbus_exception_is_transient(SQ_MB_EXC_MEMORY_PARITY));
+    ASSERT_TRUE(modbus_exception_is_transient(SQ_MB_EXC_GATEWAY_NO_RESPONSE));
+
+    /* An unfamiliar code still gets the benefit of the doubt: a slave we do not
+       recognise should not be written off on its first refusal. */
+    ASSERT_TRUE(modbus_exception_is_transient(0x7F));
+    ASSERT_TRUE(modbus_exception_is_transient(0x00));
+}
+
+/* "Illegal data address" is the usual symptom of a wrong register in the poll
+ * plan. Asking three more times cannot change the answer — it just spends bus
+ * time, and on a battery node, wake time. */
+void test_modbus_permanent_exception_stops_on_the_first_answer(void)
+{
+    const uint8_t permanent[] = {SQ_MB_EXC_ILLEGAL_FUNCTION, SQ_MB_EXC_ILLEGAL_ADDRESS, SQ_MB_EXC_ILLEGAL_VALUE,
+                                 SQ_MB_EXC_GATEWAY_PATH};
+
+    for (size_t i = 0; i < sizeof(permanent); i++) {
+        fresh();
+        mock_serial_set_mode(MOCK_RSP_EXCEPTION);
+        mock_serial_set_exception_code(permanent[i]);
+
+        sq_modbus_t mb = link_defaults(); /* retries = 3 */
+        uint8_t out[OUT_CAP], err = 0xFF;
+        size_t n = modbus_read_raw(&mb, 1, 3, 0, 2, out, sizeof(out), &err);
+
+        ASSERT_EQ(0, n);
+        ASSERT_EQ(SQ_MB_ERR_EXCEPTION, err);
+        ASSERT_EQ(1, mock_serial_tx_count()); /* answered once, believed once */
+        ASSERT_EQ(0, mock_time_now());        /* not even the inter-frame gap */
+    }
+}
+
+/* "Device busy" is the opposite: the slave understood and asked to be tried
+ * again, so it gets the full budget. */
+void test_modbus_transient_exception_uses_the_retry_budget(void)
+{
+    const uint8_t transient[] = {SQ_MB_EXC_DEVICE_FAILURE, SQ_MB_EXC_ACKNOWLEDGE, SQ_MB_EXC_DEVICE_BUSY,
+                                 SQ_MB_EXC_GATEWAY_NO_RESPONSE, 0x7F};
+
+    for (size_t i = 0; i < sizeof(transient); i++) {
+        fresh();
+        mock_serial_set_mode(MOCK_RSP_EXCEPTION);
+        mock_serial_set_exception_code(transient[i]);
+
+        sq_modbus_t mb = link_defaults();
+        uint8_t out[OUT_CAP], err = 0xFF;
+        modbus_read_raw(&mb, 1, 3, 0, 2, out, sizeof(out), &err);
+
+        ASSERT_EQ(SQ_MB_ERR_EXCEPTION, err);
+        ASSERT_EQ(4, mock_serial_tx_count()); /* retries=3 -> 4 attempts */
+    }
+}
+
+/* A slave that is busy and then ready must be read on the retry, not written
+ * off — the whole point of keeping the budget for transient codes. */
+void test_modbus_recovers_after_a_busy_exception(void)
 {
     fresh();
-    mock_serial_set_mode(MOCK_RSP_EXCEPTION);
+    const mock_rsp_t script[] = {MOCK_RSP_EXCEPTION, MOCK_RSP_GOOD};
+    mock_serial_script(script, 2);
+    mock_serial_set_exception_code(SQ_MB_EXC_DEVICE_BUSY);
+    mock_serial_set_reg(0, 0x0BEE);
 
     sq_modbus_t mb = link_defaults();
-    uint8_t out[OUT_CAP], err;
-    modbus_read_raw(&mb, 1, 3, 0, 2, out, sizeof(out), &err);
+    uint8_t out[OUT_CAP], err = 0xFF;
+    size_t n = modbus_read_raw(&mb, 1, 3, 0, 1, out, sizeof(out), &err);
 
-    ASSERT_EQ(SQ_MB_ERR_EXCEPTION, err);
-    ASSERT_EQ(4, mock_serial_tx_count()); /* retries=3 -> 4 attempts */
+    ASSERT_EQ(SQ_MB_OK, err);
+    ASSERT_EQ(4, n);
+    ASSERT_EQ(0x0B, out[2]);
+    ASSERT_EQ(0xEE, out[3]);
+    ASSERT_EQ(2, mock_serial_tx_count());
 }
 
 /* A corrupted exception frame is a CRC failure, not an exception: nothing in a

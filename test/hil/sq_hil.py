@@ -498,6 +498,36 @@ def check_rs485(dev: Device, rep: Report, rs485_port: str):
             else:
                 rep.ok(f"{label} → {data.hex()}")
 
+        # ── a slave that refuses ─────────────────────────────────────────────
+        # "Illegal data address" is what a real slave says when the poll plan
+        # names a register it does not have. It must be reported as a refusal
+        # rather than a timeout, and it must not burn the retry budget: the
+        # answer will not change however many times it is asked.
+        slave.exception_code = 0x02
+        slave.clear_log()
+        payload, latency = dev.poll_now(timeout=20.0)
+        rep.timings["poll-now against a refusing slave"] = latency
+
+        decoded = sq.split_raw_payload(payload, plan.polls)
+        rep.check(
+            all(err == "exception" for *_, err in decoded),
+            "a refusing slave is reported as an exception, not a timeout",
+            f"errors were {[err for *_, err in decoded]}, expected 'exception' — "
+            "a wrong register in the plan would look like an unplugged cable",
+        )
+        rep.check(
+            len(slave.requests) == len(plan.polls),
+            f"each poll asked exactly once ({len(slave.requests)} requests)",
+            f"{len(slave.requests)} requests for {len(plan.polls)} polls — a permanent "
+            "refusal should not be retried",
+        )
+        rep.check(
+            latency < 1.0,
+            f"refusal returned in {latency * 1000:.0f} ms, no retry budget spent",
+            f"refusal took {latency * 1000:.0f} ms — retries are still being spent on it",
+        )
+        slave.exception_code = None
+
         # ── the error path ───────────────────────────────────────────────────
         # A dead slave must still produce a full-length frame, or every later
         # value in the cloud decode shifts.

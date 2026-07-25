@@ -51,8 +51,12 @@ class ModbusSlave:
     stop_bits: int = 1
     registers: dict[int, int] = field(default_factory=dict)
 
-    # Fault injection — lets the HIL prove the device's error path end to end.
+    # Fault injection — lets the HIL prove the device's error paths end to end.
     drop_requests: bool = False
+    # Answer every request with this Modbus exception code instead of data.
+    # 0x02 (illegal data address) is what a real slave says when the poll plan
+    # names a register it does not have.
+    exception_code: int | None = None
 
     _serial: serial.Serial | None = None
     _thread: threading.Thread | None = None
@@ -154,8 +158,14 @@ class ModbusSlave:
         if not serve:
             return
 
-        data = self.expected_data(reg_start, reg_count)
-        body = bytes([slave, function, len(data)]) + data
+        if self.exception_code is not None:
+            # [addr][func|0x80][code] — five bytes with the checksum, whatever
+            # was asked for. That length difference is what the device has to
+            # notice before it can report the refusal instead of timing out.
+            body = bytes([slave, function | 0x80, self.exception_code])
+        else:
+            data = self.expected_data(reg_start, reg_count)
+            body = bytes([slave, function, len(data)]) + data
         self._serial.write(body + crc16(body).to_bytes(2, "little"))
         self._serial.flush()
         # A half-duplex converter reflects our own transmission; drop it so the
