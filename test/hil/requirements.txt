@@ -1,0 +1,11 @@
+# Hardware-in-the-loop dependencies.
+#
+#   python3 -m venv test/hil/.venv
+#   test/hil/.venv/bin/pip install -r test/hil/requirements.txt
+#
+# Kept separate from everything else in the repo: the HIL rig talks to the device
+# only over serial and the SQ protocol, so it carries its own dependencies and can
+# be lifted out to a shared bench harness when a second product needs it.
+
+meshtastic>=2.7,<3      # device API over the USB console
+pyserial>=3.5           # the RS485 dongle, and the raw bus diagnostics

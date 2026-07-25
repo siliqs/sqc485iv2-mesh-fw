@@ -1,0 +1,18 @@
+{
+  "_comment": "Firmware size baseline. Regenerate with ./bin/sq-build-check.sh --update-baseline when growth is intentional, and say why in the commit message.",
+  "envs": {
+    "sqc485iv2-esp32c3-sx1262": {
+      "flash": 1949468,
+      "ram": 116220
+    },
+    "sqc485iv2-usbtunnel-esp32c3-sx1262": {
+      "flash": 1949548,
+      "ram": 116236
+    },
+    "sqc485iv2-v231-esp32c3-sx1262": {
+      "flash": 1949580,
+      "ram": 116220
+    }
+  },
+  "recorded_for_version": "1.3.2"
+}

@@ -320,3 +320,15 @@ A well-structured test suite follows this pattern:
 | `test_serial`                | Serial communication          |
 | `test_hop_scaling`           | Hop scaling algorithm         |
 | `test_traffic_management`    | Traffic management            |
+
+## Siliqs suites (this fork)
+
+Two suites in this directory are specific to the SQC485Iv2 product and do not use
+the PlatformIO test runner at all:
+
+| Suite | Runs on | |
+| --- | --- | --- |
+| [`sq_core/`](sq_core/) | the host, no dependencies | `firmware_core` — config blob wire format, Modbus RTU master, raw-forward payload assembly |
+| [`hil/`](hil/) | a real board over USB | capability handshake, certified radio profile, config round trip, RS485 end to end |
+
+`../bin/sq-test.sh` is the entry point for both.

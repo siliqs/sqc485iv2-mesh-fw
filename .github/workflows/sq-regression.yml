@@ -1,0 +1,76 @@
+name: Siliqs regression (SQC485Iv2)
+
+# Guards the Siliqs additions to this fork. Upstream Meshtastic CI covers the
+# rest of the tree; nothing here touches it.
+#
+# Deliberately split in two so a failure says which layer broke: the host tests
+# come back in seconds, the firmware builds take minutes.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  core-tests:
+    name: firmware_core host tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run unit tests
+        run: make -C test/sq_core test
+
+      # The fixtures are the independent side of the comparison, so they must be
+      # committed output — not something the test run regenerates. If the
+      # generator and the checked-in hex disagree, one of them was edited alone.
+      - name: Golden fixtures are up to date
+        run: |
+          python3 test/sq_core/golden/make_golden.py
+          if ! git diff --quiet -- test/sq_core/golden; then
+            echo "::error::golden fixtures differ from make_golden.py output"
+            git diff -- test/sq_core/golden
+            exit 1
+          fi
+
+  build-regression:
+    name: firmware build + certified defaults
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0 # release-tag consistency needs the tags
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install PlatformIO
+        run: |
+          python -m pip install -U pip
+          pip install -U platformio
+
+      - name: Cache PlatformIO
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.platformio
+            .pio
+          key: pio-sqc485iv2-${{ hashFiles('platformio.ini', 'variants/esp32c3/**') }}
+          restore-keys: pio-sqc485iv2-
+
+      - name: Build all SQC485Iv2 environments and check the image
+        run: ./bin/sq-build-check.sh
+
+      - name: Upload firmware
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sqc485iv2-firmware
+          path: .pio/build/sqc485iv2-*/firmware-*.bin
+          if-no-files-found: warn
