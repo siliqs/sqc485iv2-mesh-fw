@@ -20,7 +20,7 @@ jobs:
     name: firmware_core host tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Run unit tests
         run: make -C test/sq_core test
@@ -41,12 +41,12 @@ jobs:
     name: firmware build + certified defaults
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           submodules: recursive
           fetch-depth: 0 # release-tag consistency needs the tags
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.11"
 
@@ -56,7 +56,7 @@ jobs:
           pip install -U platformio
 
       - name: Cache PlatformIO
-        uses: actions/cache@v4
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.platformio
@@ -71,7 +71,7 @@ jobs:
 
       - name: Upload firmware
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: sqc485iv2-firmware
           path: .pio/build/sqc485iv2-*/firmware-*.bin
