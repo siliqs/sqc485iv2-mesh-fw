@@ -41,7 +41,11 @@ CONFIG_STATUS = {
     0: "applied",
     1: "invalid (bad magic / version / length / CRC)",
     2: "valid but failed to persist",
+    3: "valid but the poll plan cannot fit one packet",
 }
+
+# Bytes a mesh packet carries — meshtastic_Constants_DATA_PAYLOAD_LEN.
+MESH_PAYLOAD_LEN = 233
 
 # Modbus error codes padded into a failed poll's error frame (firmware_core/modbus.h)
 MB_ERR = {

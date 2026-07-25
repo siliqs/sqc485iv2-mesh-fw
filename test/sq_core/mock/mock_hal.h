@@ -55,6 +55,10 @@ void mock_serial_set_reg(uint16_t addr, uint16_t value);
 /* Exception code returned in MOCK_RSP_EXCEPTION frames (default 0x02). */
 void mock_serial_set_exception_code(uint8_t code);
 
+/* Corrupt the checksum of every response, whatever kind it is. Lets a test build
+   an otherwise-valid exception (or any other frame) that failed on the wire. */
+void mock_serial_corrupt_crc(bool on);
+
 /* Captured transmissions. */
 size_t mock_serial_tx_count(void);                    /* number of hal_serial_write() calls */
 const uint8_t *mock_serial_tx(size_t i, size_t *len); /* NULL when i is out of range */

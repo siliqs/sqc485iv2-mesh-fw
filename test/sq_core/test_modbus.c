@@ -186,31 +186,57 @@ void test_modbus_rejects_wrong_function_reply(void)
     assert_read_fails(MOCK_RSP_WRONG_FUNC, SQ_MB_ERR_MISMATCH, 4);
 }
 
-/* KNOWN LIMITATION, pinned deliberately.
- *
- * A Modbus exception response is 5 bytes ([addr][func|0x80][code][crc][crc]),
- * but transact() waits for the full 5 + 2*reg_count bytes a *successful* reply
- * would have. The short frame therefore never completes and the transaction is
- * reported as a timeout — SQ_MB_ERR_EXCEPTION is currently unreachable.
- *
- * Consequence in the field: a slave answering "illegal data address" (the usual
- * symptom of a wrong register in the poll plan) is indistinguishable from an
- * unplugged cable. If that diagnosis matters, transact() needs to peek at
- * byte 1 before deciding how many bytes to expect; until then this test records
- * the behaviour so the change is visible when it happens.
- */
-void test_modbus_exception_reply_is_reported_as_timeout(void)
+/* A slave that answers "illegal data address" — the usual symptom of a wrong
+ * register in the poll plan — must be distinguishable from an unplugged cable.
+ * An exception frame is 5 bytes whatever was asked for, so the engine has to read
+ * the function byte before it can know how much more to expect. */
+void test_modbus_reports_exception_replies(void)
+{
+    const uint8_t codes[] = {0x01, 0x02, 0x03, 0x04}; /* illegal fn/address/value, device failure */
+
+    for (size_t i = 0; i < sizeof(codes); i++) {
+        fresh();
+        mock_serial_set_mode(MOCK_RSP_EXCEPTION);
+        mock_serial_set_exception_code(codes[i]);
+
+        sq_modbus_t mb = link_defaults();
+        uint8_t out[OUT_CAP], err = 0xFF;
+        size_t n = modbus_read_raw(&mb, 1, 3, 0, 2, out, sizeof(out), &err);
+
+        ASSERT_EQ(0, n);
+        ASSERT_EQ(SQ_MB_ERR_EXCEPTION, err);
+    }
+}
+
+/* Retrying an exception is pointless — the slave answered, it just said no — but
+ * the engine cannot know the register map is wrong rather than transiently busy,
+ * so it still uses its attempts. Pinned so the cost is visible. */
+void test_modbus_exception_still_consumes_retries(void)
 {
     fresh();
     mock_serial_set_mode(MOCK_RSP_EXCEPTION);
-    mock_serial_set_exception_code(0x02); /* illegal data address */
+
+    sq_modbus_t mb = link_defaults();
+    uint8_t out[OUT_CAP], err;
+    modbus_read_raw(&mb, 1, 3, 0, 2, out, sizeof(out), &err);
+
+    ASSERT_EQ(SQ_MB_ERR_EXCEPTION, err);
+    ASSERT_EQ(4, mock_serial_tx_count()); /* retries=3 -> 4 attempts */
+}
+
+/* A corrupted exception frame is a CRC failure, not an exception: nothing in a
+ * frame that failed its checksum is worth reporting as fact. */
+void test_modbus_corrupt_exception_frame_is_a_crc_error(void)
+{
+    fresh();
+    mock_serial_set_mode(MOCK_RSP_EXCEPTION);
+    mock_serial_corrupt_crc(true);
 
     sq_modbus_t mb = link_defaults();
     uint8_t out[OUT_CAP], err = 0xFF;
-    size_t n = modbus_read_raw(&mb, 1, 3, 0, 2, out, sizeof(out), &err);
+    modbus_read_raw(&mb, 1, 3, 0, 2, out, sizeof(out), &err);
 
-    ASSERT_EQ(0, n);
-    ASSERT_EQ(SQ_MB_ERR_TIMEOUT, err); /* NOT SQ_MB_ERR_EXCEPTION — see comment */
+    ASSERT_EQ(SQ_MB_ERR_CRC, err);
 }
 
 /* Bad arguments must be caught before anything is driven onto the bus. */

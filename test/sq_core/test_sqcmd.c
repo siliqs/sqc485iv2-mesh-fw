@@ -299,9 +299,53 @@ void test_sqcmd_get_config_reply_wraps_the_blob(void)
     ASSERT_MEM_EQ(blob, reply + 3, blob_len);
 }
 
+/* The mesh payload the module hands poll_collect_raw() (ModbusModule.cpp). */
+#define MESH_PAYLOAD_LEN 233
+
+void test_sqcmd_plan_payload_length(void)
+{
+    sq_config_t c;
+    config_set_defaults(&c);
+
+    /* the shipped default plan: 2 regs + 1 reg + 1 reg */
+    ASSERT_EQ((2 + 4) + (2 + 2) + (2 + 2), sq_plan_payload_len(&c));
+    ASSERT_TRUE(sq_plan_payload_len(&c) <= MESH_PAYLOAD_LEN);
+
+    c.poll_count = 0;
+    ASSERT_EQ(0, sq_plan_payload_len(&c));
+}
+
+/* The config format can express a plan the radio cannot carry, and the poll
+   engine's response is to silently drop whole polls off the end. The device
+   refuses such a plan instead, so the operator finds out at configuration time
+   rather than by noticing two datapoints are permanently missing. */
+void test_sqcmd_widest_plan_exceeds_a_mesh_payload(void)
+{
+    sq_config_t c;
+    config_set_defaults(&c);
+    c.poll_count = SQ_MAX_POLLS;
+    for (int i = 0; i < SQ_MAX_POLLS; i++) {
+        c.polls[i].slave = (uint8_t)(i + 1);
+        c.polls[i].function = 3;
+        c.polls[i].reg_count = SQ_MAX_REGS;
+    }
+
+    ASSERT_EQ(272, sq_plan_payload_len(&c));
+    ASSERT_TRUE(sq_plan_payload_len(&c) > MESH_PAYLOAD_LEN);
+
+    /* Six full-width polls is the real limit; the seventh tips it over. */
+    c.poll_count = 6;
+    ASSERT_EQ(204, sq_plan_payload_len(&c));
+    ASSERT_TRUE(sq_plan_payload_len(&c) <= MESH_PAYLOAD_LEN);
+
+    c.poll_count = 7;
+    ASSERT_EQ(238, sq_plan_payload_len(&c));
+    ASSERT_TRUE(sq_plan_payload_len(&c) > MESH_PAYLOAD_LEN);
+}
+
 void test_sqcmd_config_ack_carries_the_status(void)
 {
-    for (uint8_t status = 0; status <= 2; status++) {
+    for (uint8_t status = 0; status <= 3; status++) {
         uint8_t ack[SQ_CONFIG_ACK_LEN];
         ASSERT_EQ(SQ_CONFIG_ACK_LEN, sq_build_config_ack(status, ack, sizeof(ack)));
         ASSERT_MEM_EQ("SQ!", ack, 3);

@@ -435,30 +435,38 @@ ProcessMessage ModbusModule::handleReceived(const meshtastic_MeshPacket &mp)
 
 void ModbusModule::applyConfigBlob(const uint8_t *blob, size_t len, uint32_t from)
 {
-    // Status codes echoed back to the configurator in the 'SQ!' reply:
-    //   0 = applied, 1 = invalid (bad magic / unknown version / length / CRC),
-    //   2 = valid but failed to persist.
+    // Status codes echoed back to the configurator in the 'SQ!' reply — see the
+    // SQ_CFG_* constants in sqcmd.h.
     uint8_t status;
     sq_config_t incoming = g_cfg;   // preserve fields the blob doesn't carry (LoRaWAN keys)
+    size_t plan_len = 0;
     if (!config_from_blob(&incoming, blob, len)) {
         LOG_DEBUG("ModbusModule: rx %u bytes on portnum not a valid config blob; NAK",
                   (unsigned)len);
-        status = 1;
+        status = SQ_CFG_INVALID;
+    } else if ((plan_len = sq_plan_payload_len(&incoming)) > meshtastic_Constants_DATA_PAYLOAD_LEN) {
+        // Refuse rather than accept-and-truncate. poll_collect_raw() would drop
+        // whole polls off the end silently, so the operator would see a plan that
+        // "applied" while its last datapoints never appeared in any uplink.
+        LOG_WARN("ModbusModule: config rejected — %u poll(s) need %u bytes, a packet carries %u",
+                 incoming.poll_count, (unsigned)plan_len,
+                 (unsigned)meshtastic_Constants_DATA_PAYLOAD_LEN);
+        status = SQ_CFG_PLAN_TOO_LARGE;
     } else if (!config_save(&incoming)) {
         LOG_WARN("ModbusModule: config blob valid but save failed");
-        status = 2;
+        status = SQ_CFG_NOT_PERSISTED;
     } else {
         g_cfg = incoming;
         // Re-init the UART so a changed baud/parity takes effect without a reboot.
         hal_serial_init(g_cfg.modbus.baud, g_cfg.modbus.parity, g_cfg.modbus.stop_bits);
-        LOG_INFO("ModbusModule: config updated over mesh from 0x%08x — %u poll(s), baud %u",
-                 (unsigned)from, g_cfg.poll_count, (unsigned)g_cfg.modbus.baud);
-        status = 0;
+        LOG_INFO("ModbusModule: config updated over mesh from 0x%08x — %u poll(s), %u byte payload, baud %u",
+                 (unsigned)from, g_cfg.poll_count, (unsigned)plan_len, (unsigned)g_cfg.modbus.baud);
+        status = SQ_CFG_OK;
     }
     // App-level ACK/NAK so the configurator knows the node actually accepted it
     // (older firmware without this simply won't reply → the UI shows "unconfirmed").
-    const uint8_t r[4] = { 'S', 'Q', '!', status };
-    sendSqReply(r, sizeof(r), from, 0);
+    uint8_t r[SQ_CONFIG_ACK_LEN];
+    sendSqReply(r, sq_build_config_ack(status, r, sizeof(r)), from, 0);
 }
 
 void ModbusModule::sendSqReply(const uint8_t *data, size_t len, uint32_t from, uint8_t channel)

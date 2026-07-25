@@ -74,23 +74,36 @@ in three ways that unit tests need:
   `+WF-R`, which is how `test_modbus_de_turnaround_order` checks that DE is
   released before the engine starts listening.
 
-## Known limitations pinned by these tests
+## Behaviour these tests pinned, and then changed
 
-Two tests assert current behaviour that is arguably wrong. They are written this
-way on purpose: the behaviour is real, so it should be visible and versioned
-rather than discovered in the field.
+The suite was written against the code as it stood, including the parts that were
+wrong. Writing the awkward behaviour down first is what made it safe to change:
 
-- `test_modbus_exception_reply_is_reported_as_timeout` — a Modbus exception
-  response is 5 bytes, but `transact()` waits for the full length a *successful*
-  reply would have, so exceptions time out instead. `SQ_MB_ERR_EXCEPTION` is
-  currently unreachable, and "wrong register in the poll plan" is indistinguishable
-  from "cable unplugged".
-- `test_poll_drops_polls_that_exceed_the_mesh_payload` — the widest expressible
-  plan (8 polls × 16 registers = 272 bytes) does not fit the 233-byte mesh
-  payload. Truncation is graceful and lands on a poll boundary, but the last two
-  polls are dropped from every uplink with nothing to signal it.
+- **A Modbus exception used to be reported as a timeout.** `transact()` waited for
+  the length a *successful* reply would have, so the 5-byte exception frame never
+  completed. In the field that made "wrong register in the poll plan" identical to
+  "cable unplugged". `transact()` now reads the function byte first and sizes the
+  rest of the frame from it — see `test_modbus_reports_exception_replies`.
 
-If either is fixed, the corresponding test should change in the same commit.
+- **A dead bus cost twice what it looked like.** The mock originally returned
+  whatever bytes were available; the real HAL spins until it fills the buffer or
+  the timeout expires. Making the mock faithful revealed that each attempt burned
+  two full timeouts, not one. Reading the reply in stages removed the second one,
+  halving the worst case — see `test_modbus_timeout_budget_is_bounded`.
+
+- **An over-sized poll plan was accepted and silently truncated.** The format can
+  express 272 bytes against a 233-byte packet, and `poll_collect_raw()` drops
+  whole polls off the end. The truncation itself is correct — it lands on a poll
+  boundary, so the cloud decode of what arrives stays aligned — but nothing said
+  it happened. The device now refuses such a plan with ack status 3. The
+  truncation behaviour is still pinned by
+  `test_poll_drops_polls_that_exceed_the_mesh_payload`, because it remains the
+  backstop.
+
+One limitation is still pinned as-is: an exception reply consumes the full retry
+budget (`test_modbus_exception_still_consumes_retries`). The slave answered, so
+retrying will not help, but the engine cannot tell a wrong register map from a
+transiently busy device.
 
 ## Adding a test
 

@@ -16,31 +16,53 @@ uint16_t modbus_crc16(const uint8_t *buf, size_t len)
     return crc;
 }
 
-/* One transaction. Sends req, reads exp response bytes (after stripping the TX
-   echo per BOARD), copies them to body[0..exp-1]. Returns SQ_MB_OK or an error. */
+/* Read exactly `want` bytes, or give up.
+
+   hal_serial_read() spins until it has filled the buffer or the timeout expires —
+   it does NOT return early when the line goes quiet. So every byte asked for and
+   not delivered costs a full response_timeout_ms, which is why the reply is read
+   in stages rather than as one blind request for the maximum length. */
+static bool read_exact(uint8_t *dst, size_t want, uint32_t to_ms)
+{
+    size_t got = 0;
+    while (got < want) {
+        int n = hal_serial_read(dst + got, want - got, to_ms);
+        if (n <= 0)
+            return false;
+        got += (size_t)n;
+    }
+    return true;
+}
+
+/* One transaction. Sends req, then reads the reply into body[] and reports how
+   long it turned out to be — a Modbus exception is 5 bytes regardless of how many
+   registers were asked for. Returns SQ_MB_OK or an error. */
 static uint8_t transact(const sq_modbus_t *mb, const uint8_t *req, size_t reqlen,
-                        uint8_t *body, size_t exp)
+                        uint8_t *body, size_t exp, size_t *body_len)
 {
     hal_serial_set_tx(true);
     hal_serial_write(req, reqlen);
     hal_serial_flush();
     hal_serial_set_tx(false);
 
-    size_t echo  = BOARD.rs485_tx_echo ? reqlen : 0;
-    size_t total = echo + exp;
-
-    uint8_t buf[8 + 5 + 2 * SQ_MAX_REGS + 8];
-    if (total > sizeof(buf)) return SQ_MB_ERR_SHORT;
-
-    size_t got = 0;
-    while (got < total) {
-        int n = hal_serial_read(buf + got, total - got, mb->response_timeout_ms);
-        if (n <= 0) break;
-        got += (size_t)n;
+    /* Half-duplex boards tie /RE low, so everything transmitted comes straight
+       back. Drain exactly that much before listening for the slave. */
+    if (BOARD.rs485_tx_echo) {
+        uint8_t echo[8];
+        if (reqlen > sizeof(echo)) return SQ_MB_ERR_SHORT;
+        if (!read_exact(echo, reqlen, mb->response_timeout_ms)) return SQ_MB_ERR_TIMEOUT;
     }
-    if (got < total) return SQ_MB_ERR_TIMEOUT;
 
-    memcpy(body, buf + echo, exp);
+    /* Address and function first: the function's high bit is what says whether
+       the rest of this frame is a full reply or a 5-byte exception. Asking for
+       `exp` bytes up front is what used to turn every exception into a timeout —
+       the short frame never completed, so the reason for the failure was lost. */
+    if (!read_exact(body, 2, mb->response_timeout_ms)) return SQ_MB_ERR_TIMEOUT;
+
+    size_t want = (body[1] & 0x80) ? SQ_MB_EXCEPTION_FRAME_LEN : exp;
+    if (!read_exact(body + 2, want - 2, mb->response_timeout_ms)) return SQ_MB_ERR_TIMEOUT;
+
+    *body_len = want;
     return SQ_MB_OK;
 }
 
@@ -69,12 +91,16 @@ size_t modbus_read_raw(const sq_modbus_t *mb, uint8_t slave, uint8_t func,
     int attempts = (int)mb->retries + 1;
     for (int a = 0; a < attempts; a++) {
         uint8_t body[5 + 2 * SQ_MAX_REGS];
-        uint8_t e = transact(mb, req, sizeof(req), body, exp);
+        size_t  blen = 0;
+        uint8_t e = transact(mb, req, sizeof(req), body, exp, &blen);
         if (e == SQ_MB_OK) {
-            if (body[1] & 0x80)                  { *err = SQ_MB_ERR_EXCEPTION; }
-            else if (body[0] != slave || body[1] != func) { *err = SQ_MB_ERR_MISMATCH; }
-            else if ((uint16_t)(body[exp - 2] | (body[exp - 1] << 8)) != modbus_crc16(body, exp - 2))
-                                                 { *err = SQ_MB_ERR_CRC; }
+            /* Checksum first — no field is worth reading out of a frame that did
+               not survive the wire. */
+            uint16_t rx_crc = (uint16_t)(body[blen - 2] | (body[blen - 1] << 8));
+            if (rx_crc != modbus_crc16(body, blen - 2))   { *err = SQ_MB_ERR_CRC; }
+            else if (body[0] != slave)           { *err = SQ_MB_ERR_MISMATCH; }
+            else if (body[1] & 0x80)             { *err = SQ_MB_ERR_EXCEPTION; }
+            else if (body[1] != func)            { *err = SQ_MB_ERR_MISMATCH; }
             else if (body[2] != 2 * reg_count)   { *err = SQ_MB_ERR_SHORT; }
             else {
                 out[0] = body[0];                /* addr */

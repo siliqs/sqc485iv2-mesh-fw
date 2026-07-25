@@ -120,6 +120,14 @@ size_t sq_build_get_config_reply(const sq_config_t *cfg, uint8_t *out, size_t ca
     return bl ? 3 + bl : 0;
 }
 
+size_t sq_plan_payload_len(const sq_config_t *cfg)
+{
+    size_t len = 0;
+    for (uint8_t i = 0; i < cfg->poll_count && i < SQ_MAX_POLLS; i++)
+        len += 2u + 2u * (size_t)cfg->polls[i].reg_count;
+    return len;
+}
+
 size_t sq_build_config_ack(uint8_t status, uint8_t *out, size_t cap)
 {
     if (cap < SQ_CONFIG_ACK_LEN)

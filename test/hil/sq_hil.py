@@ -226,6 +226,24 @@ def check_config_roundtrip(dev: Device, rep: Report, saved_blob: bytes):
                   f"@{got.reg_start}×{got.reg_count}",
                   f"poll[{i}] wrote {wrote.as_tuple()}, read {got.as_tuple()}")
 
+    # A plan the radio cannot carry must be refused, not accepted and truncated.
+    # The widest the format can express is 8 polls x 16 registers = 272 bytes
+    # against a 233-byte packet; the device drops whole polls off the end, which
+    # is graceful but invisible, so it should never get that far.
+    oversized = sq.Config(
+        name="hil-oversize",
+        polls=[sq.Poll(i + 1, 3, i * 16, 16) for i in range(8)],
+        uplink_interval_s=3600,
+        deep_sleep=False,
+    )
+    rep.info(f"oversized plan: {len(oversized.polls)} polls need "
+             f"{oversized.expected_payload_len} bytes, a packet carries {sq.MESH_PAYLOAD_LEN}")
+    status = dev.apply_config(oversized.to_blob())
+    rep.check(status == 3,
+              "an over-sized poll plan is refused (status 3)",
+              f"an over-sized plan returned {sq.CONFIG_STATUS.get(status, status)} — "
+              "the last polls would be dropped from every uplink with nothing to say so")
+
     rep.check(dev.apply_config(saved_blob) == 0,
               "device configuration restored",
               "could not restore the original configuration — the board is left on the probe config")

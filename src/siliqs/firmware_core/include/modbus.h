@@ -7,12 +7,16 @@
 
 enum {
     SQ_MB_OK = 0,
-    SQ_MB_ERR_TIMEOUT   = 1,
-    SQ_MB_ERR_CRC       = 2,
-    SQ_MB_ERR_EXCEPTION = 3,
-    SQ_MB_ERR_SHORT     = 4,
-    SQ_MB_ERR_MISMATCH  = 5
+    SQ_MB_ERR_TIMEOUT   = 1,   /* nothing (or not enough) came back in time     */
+    SQ_MB_ERR_CRC       = 2,   /* frame arrived corrupted                       */
+    SQ_MB_ERR_EXCEPTION = 3,   /* the slave answered, refusing the request      */
+    SQ_MB_ERR_SHORT     = 4,   /* bad byte count, or a request we cannot make   */
+    SQ_MB_ERR_MISMATCH  = 5    /* someone else's reply, or the wrong function   */
 };
+
+/* [addr][func|0x80][code][crc][crc] — an exception is this length whatever was
+   asked for, which is why the reply length cannot be assumed up front. */
+#define SQ_MB_EXCEPTION_FRAME_LEN 5
 
 /* Standard Modbus RTU CRC16. */
 uint16_t modbus_crc16(const uint8_t *buf, size_t len);

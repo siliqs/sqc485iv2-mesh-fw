@@ -29,6 +29,7 @@ static size_t s_attempt;
 static uint16_t s_regs[REG_FILE];
 static bool s_reg_set[REG_FILE];
 static uint8_t s_exc_code = 0x02;
+static bool s_corrupt_crc;
 
 static uint8_t s_tx[MAX_ATTEMPTS][MAX_FRAME];
 static size_t s_tx_len[MAX_ATTEMPTS];
@@ -74,6 +75,8 @@ static size_t build_response(mock_rsp_t mode, const uint8_t *req, uint8_t *out)
         out[p++] = (uint8_t)(func | 0x80);
         out[p++] = s_exc_code;
         append_crc(out, &p);
+        if (s_corrupt_crc)
+            out[p - 1] ^= 0xFF;
         return p;
     }
 
@@ -87,7 +90,7 @@ static size_t build_response(mock_rsp_t mode, const uint8_t *req, uint8_t *out)
     }
     append_crc(out, &p);
 
-    if (mode == MOCK_RSP_BAD_CRC)
+    if (mode == MOCK_RSP_BAD_CRC || s_corrupt_crc)
         out[p - 1] ^= 0xFF; /* corrupt the CRC only — everything else stays valid */
 
     return p;
@@ -151,13 +154,21 @@ int hal_serial_read(uint8_t *buf, size_t len, uint32_t to_ms)
     logc('R');
 
     size_t avail = s_rx_len - s_rx_pos;
-    if (avail == 0) {
-        mock_time_advance(to_ms); /* a real read burns the whole timeout */
-        return 0;
-    }
     size_t n = len < avail ? len : avail;
-    memcpy(buf, s_rx + s_rx_pos, n);
-    s_rx_pos += n;
+    if (n) {
+        memcpy(buf, s_rx + s_rx_pos, n);
+        s_rx_pos += n;
+    }
+
+    /* Fidelity matters here. The real HAL (hal_meshtastic.cpp) spins until it has
+       filled `len` bytes OR the timeout expires — it does NOT return early just
+       because the line went quiet. So asking for more bytes than will ever arrive
+       always costs a full response_timeout_ms, even when some bytes did turn up.
+       A mock that returned partial data immediately made the engine look twice as
+       fast as it is on a dead bus. */
+    if (n < len)
+        mock_time_advance(to_ms);
+
     return (int)n;
 }
 
@@ -172,6 +183,7 @@ void mock_serial_reset(void)
     s_log_len = 0;
     s_log[0] = '\0';
     s_exc_code = 0x02;
+    s_corrupt_crc = false;
     memset(s_reg_set, 0, sizeof(s_reg_set));
     memset(s_tx_len, 0, sizeof(s_tx_len));
 }
@@ -203,6 +215,11 @@ void mock_serial_set_reg(uint16_t addr, uint16_t value)
 void mock_serial_set_exception_code(uint8_t code)
 {
     s_exc_code = code;
+}
+
+void mock_serial_corrupt_crc(bool on)
+{
+    s_corrupt_crc = on;
 }
 
 size_t mock_serial_tx_count(void)

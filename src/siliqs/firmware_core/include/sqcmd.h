@@ -81,6 +81,23 @@ size_t sq_build_capability_reply(uint8_t *out, size_t cap);
 /* 'S','Q','G' + the current config blob */
 size_t sq_build_get_config_reply(const sq_config_t *cfg, uint8_t *out, size_t cap);
 
-/* 'S','Q','!', status — 0 applied, 1 invalid, 2 valid but not persisted */
+/* 'S','Q','!', status */
 #define SQ_CONFIG_ACK_LEN 4
+
+#define SQ_CFG_OK             0 /* applied and persisted                            */
+#define SQ_CFG_INVALID        1 /* bad magic / unknown version / length / CRC       */
+#define SQ_CFG_NOT_PERSISTED  2 /* valid, but the store rejected it                 */
+#define SQ_CFG_PLAN_TOO_LARGE 3 /* valid, but its payload cannot fit one packet     */
+
 size_t sq_build_config_ack(uint8_t status, uint8_t *out, size_t cap);
+
+/* Bytes the poll plan will produce on every uplink: each poll contributes
+   2 + 2*reg_count whether it succeeds or fails.
+
+   Worth checking before accepting a plan. The config format can express 8 polls
+   of 16 registers — 272 bytes — but a mesh packet carries 233, and
+   poll_collect_raw() responds by dropping whole polls off the end. That is
+   graceful (the cloud decode of what does arrive stays aligned) and completely
+   silent, so an over-sized plan looks like it worked while two datapoints simply
+   never appear. */
+size_t sq_plan_payload_len(const sq_config_t *cfg);
