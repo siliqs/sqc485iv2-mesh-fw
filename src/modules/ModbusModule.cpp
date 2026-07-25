@@ -34,6 +34,7 @@
 extern "C" {
 #include "config.h"          // sq_config_t, config_load/save, config_from_blob
 #include "poll.h"            // poll_collect_raw  (raw-forward payload)
+#include "sqcmd.h"           // sq_classify + the reply builders (host-tested, no state)
 #include "hal/hal_serial.h"  // hal_serial_init + raw write/read (USB↔RS485 bridge)
 #include "hal/hal_time.h"    // hal_millis (idle-gap framing for the RS485 tunnel)
 #include "hal/hal_store.h"   // persist the BLE TX power (separate key, not the blob)
@@ -321,131 +322,114 @@ ProcessMessage ModbusModule::handleReceived(const meshtastic_MeshPacket &mp)
         return ProcessMessage::CONTINUE;
     }
 
-    // Config downlinks and our own telemetry uplinks share this PortNum, and we
-    // CANNOT tell them apart by source: a companion app provisions by injecting
-    // the config on the LOCAL node's Meshtastic API, so its packet is from==self,
-    // exactly like our telemetry loopback. So let CONTENT decide — only a valid
-    // 'SQ' blob (magic+version+length+CRC16, checked by config_from_blob) is
-    // treated as config; raw-forward telemetry fails that and is ignored. A cheap
-    // magic pre-check keeps our own uplinks from spamming the debug log.
     const uint8_t *b = mp.decoded.payload.bytes;
     size_t n = mp.decoded.payload.size;
+
+    // The classification below is byte-pattern only, so it lives in firmware_core
+    // (sqcmd.c) where the host tests can reach every branch — the marker/blob
+    // collisions and the "never act on our own reply" rule are exactly the kind of
+    // thing that is expensive to discover on a mesh. What stays here is what needs
+    // node state: who to answer, whether the tunnel is up, who the peer is.
+    const sq_cmd_t cmd = sq_classify(b, n);
+    const uint32_t self = nodeDB->getNodeNum();
+
+    switch (cmd) {
 
     // Poll-now test request: the 3 bytes 'S','Q','?'. Do an immediate read and
     // send it the SAME way as a periodic read — pollAndSend() broadcasts + cc's to
     // the phone, which reliably reaches a connected configurator. (An addressed
     // self-reply was unreliable; the broadcast path is the one that works.)
-    // A config blob is 'S','Q',ver(=2),… so byte[2]='?' can't collide with it.
-    if (n >= 3 && b[0] == 'S' && b[1] == 'Q' && b[2] == '?') {
+    case SQ_CMD_POLL_NOW:
         LOG_INFO("ModbusModule: poll-now request — reading + broadcasting");
         pollAndSend();
-        return ProcessMessage::CONTINUE;
-    }
+        break;
 
     // BLE TX power: 'S','Q','P' + int8 dBm. Set the radio power live and persist it to
-    // a separate key (not the config blob). No reboot. byte[2]='P' (0x50) is distinct
-    // from a config version / '?' / '>' / '}'.
-    if (n >= 4 && b[0] == 'S' && b[1] == 'Q' && b[2] == 'P') {
+    // a separate key (not the config blob). No reboot.
+    case SQ_CMD_BLE_POWER:
         applyBlePower((int)(int8_t)b[3], true);
-        return ProcessMessage::CONTINUE;
-    }
+        break;
 
-    // Capability query: 'S','Q','V','?' → reply 'S','Q','V', proto, max_blob_ver,
-    // features, fw_len, fw[…], pid_len, product_id[…]. Lets the configurator show the real
-    // product + firmware and gate/verify features. byte[2]='V' (0x56); the trailing '?'
-    // distinguishes a query from the reply, so a node never acts on another node's reply.
-    // (proto 2 appends product_id after fw; a proto-1 reader stops at fw and ignores it.)
-    if (n >= 4 && b[0] == 'S' && b[1] == 'Q' && b[2] == 'V' && b[3] == '?') {
-        const char *fw = SQ_FW_VERSION;
-        const char *pid = SQ_PRODUCT_ID;
-        uint8_t fl = (uint8_t)strlen(fw);
-        uint8_t pdl = (uint8_t)strlen(pid);
-        uint8_t r[9 + sizeof(SQ_FW_VERSION) + sizeof(SQ_PRODUCT_ID)];
-        size_t i = 0;
-        r[i++] = 'S'; r[i++] = 'Q'; r[i++] = 'V';
-        r[i++] = SQ_CAP_PROTO;
-        r[i++] = SQ_CONFIG_VERSION;
-        r[i++] = SQ_FEATURES;
-        r[i++] = fl;
-        memcpy(r + i, fw, fl); i += fl;
-        r[i++] = pdl;                         // product-id length (proto ≥ 2)
-        memcpy(r + i, pid, pdl); i += pdl;
-        LOG_INFO("ModbusModule: capability query → %s fw %s, blob v%u, feat 0x%02x",
-                 pid, fw, (unsigned)SQ_CONFIG_VERSION, (unsigned)SQ_FEATURES);
-        sendSqReply(r, i, mp.from, mp.channel);
-        return ProcessMessage::CONTINUE;
-    }
-
-    // Get-config query: 'S','Q','G','?' → reply 'S','Q','G' + the CURRENT config blob, so
-    // the configurator can read back what the node is actually set to (device mode from
-    // role + rs485/tunnel flags, sensor sub-mode from deep_sleep/confirmed, poll list,
-    // interval, dest) and SHOW it / pre-fill the form — so the user isn't guessing the
-    // node's state. byte[2]='G' (0x47) is >15 so the reply is never taken for a config
-    // write; the trailing '?' distinguishes a query from the reply.
-    if (n >= 4 && b[0] == 'S' && b[1] == 'Q' && b[2] == 'G' && b[3] == '?') {
-        uint8_t r[3 + 160];
-        r[0] = 'S'; r[1] = 'Q'; r[2] = 'G';
-        size_t bl = config_to_blob(&g_cfg, r + 3, sizeof(r) - 3);
-        if (bl) {
-            LOG_INFO("ModbusModule: get-config query → %u-byte config blob", (unsigned)bl);
-            sendSqReply(r, 3 + bl, mp.from, mp.channel);
+    // Capability query → the report the configurator uses to show the real product +
+    // firmware and gate/verify features.
+    case SQ_CMD_CAPABILITY: {
+        uint8_t r[SQ_CAP_REPLY_MAX];
+        size_t len = sq_build_capability_reply(r, sizeof(r));
+        if (len) {
+            LOG_INFO("ModbusModule: capability query → %s fw %s, blob v%u, feat 0x%02x",
+                     SQ_PRODUCT_ID, SQ_FW_VERSION, (unsigned)SQ_CONFIG_VERSION, (unsigned)SQ_FEATURES);
+            sendSqReply(r, len, mp.from, mp.channel);
         }
-        return ProcessMessage::CONTINUE;
+        break;
+    }
+
+    // Get-config query → the CURRENT config blob, so the configurator can read back
+    // what the node is actually set to and pre-fill its form instead of guessing.
+    case SQ_CMD_GET_CONFIG: {
+        uint8_t r[3 + 160];
+        size_t len = sq_build_get_config_reply(&g_cfg, r, sizeof(r));
+        if (len) {
+            LOG_INFO("ModbusModule: get-config query → %u-byte config blob", (unsigned)(len - 3));
+            sendSqReply(r, len, mp.from, mp.channel);
+        }
+        break;
     }
 
     // RS485 raw-bridge request: write the following bytes to RS485 and return the
-    // reply. Two distinct callers share this path but use DIFFERENT command/reply
-    // markers so they never cross (e.g. when both target the same peer):
+    // reply. Two distinct callers share this path but use DIFFERENT reply markers so
+    // they never cross (e.g. when both target the same peer):
     //   'S','Q','>'  USB↔RS485 tool (manual / configurator)  → reply 'S','Q','<'
     //   'S','Q','}'  RS485↔RS485 tunnel (autonomous master)  → reply 'S','Q','{'
-    // byte[2] here (0x3E / 0x7D) can't collide with a config blob (byte[2]=version)
-    // or poll-now ('?').
-    if (n >= 3 && b[0] == 'S' && b[1] == 'Q' && (b[2] == '>' || b[2] == '}')) {
+    case SQ_CMD_RS485_BRIDGE:
+    case SQ_CMD_TUNNEL_FORWARD:
         // Only act if this request is for US: addressed to our node or broadcast.
         // Otherwise it's a packet the local node merely originates — transmit it,
         // don't run it against our own RS485.
-        const uint32_t self = nodeDB->getNodeNum();
         if (mp.to == self || mp.to == NODENUM_BROADCAST) {
             // Local injection (from == self) → reply to USB only (no RF). A genuine
             // remote requester → reply over the mesh, unicast back on its channel.
             const bool local = (mp.from == 0 || mp.from == self);
-            const uint8_t replyMarker = (b[2] == '}') ? '{' : '<';
-            rawBridge(b + 3, n - 3, mp.from, mp.channel, local, replyMarker);
+            rawBridge(b + SQ_FRAME_PAYLOAD_OFFSET, n - SQ_FRAME_PAYLOAD_OFFSET, mp.from, mp.channel, local,
+                      sq_bridge_reply_marker(cmd));
         }
-        return ProcessMessage::CONTINUE;
-    }
+        break;
 
     // RS485↔RS485 tunnel reply: our peer answered a forwarded frame with 'SQ{' + raw
     // bytes. Write them straight back out our LOCAL RS485 to the master. Only when we
     // are the tunnel master and only from our configured peer. The distinct '{' marker
     // (vs the USB tool's '<') means a manual USB probe of the same peer is NOT mistaken
     // for a tunnel reply and injected onto our bus.
-    if (g_cfg.tunnel.enabled && n >= 3 && b[0] == 'S' && b[1] == 'Q' && b[2] == '{' &&
-        mp.from == g_cfg.tunnel.peer_node) {
-        tunnelWriteback(b + 3, n - 3);
-        return ProcessMessage::CONTINUE;
-    }
+    case SQ_CMD_TUNNEL_REPLY:
+        if (g_cfg.tunnel.enabled && mp.from == g_cfg.tunnel.peer_node)
+            tunnelWriteback(b + SQ_FRAME_PAYLOAD_OFFSET, n - SQ_FRAME_PAYLOAD_OFFSET);
+        break;
 
-#ifdef SQ_USB_TUNNEL
     // USB↔USB pipe: the peer pushed data 'SQ~' + raw bytes — write it straight to our
     // local USB. Symmetric (both ends do this); no reply.
-    if (g_cfg.tunnel.enabled && n >= 3 && b[0] == 'S' && b[1] == 'Q' && b[2] == '~' &&
-        mp.from == g_cfg.tunnel.peer_node) {
-        tunnelWriteback(b + 3, n - 3);
-        return ProcessMessage::CONTINUE;
-    }
+    case SQ_CMD_PIPE_DATA:
+#ifdef SQ_USB_TUNNEL
+        if (g_cfg.tunnel.enabled && mp.from == g_cfg.tunnel.peer_node)
+            tunnelWriteback(b + SQ_FRAME_PAYLOAD_OFFSET, n - SQ_FRAME_PAYLOAD_OFFSET);
 #endif
+        break;
 
-    if (n < 4 || b[0] != 'S' || b[1] != 'Q')
-        return ProcessMessage::CONTINUE;
+    // Config downlinks and our own telemetry uplinks share this PortNum, and we
+    // CANNOT tell them apart by source: a companion app provisions by injecting the
+    // config on the LOCAL node's Meshtastic API, so its packet is from==self, exactly
+    // like our telemetry loopback. Only CONTENT decides — config_from_blob() still has
+    // the final say via magic + version + length + CRC16.
+    case SQ_CMD_CONFIG_BLOB:
+        applyConfigBlob(b, n, mp.from);   // applies + replies 'SQ!' with the apply status
+        break;
 
-    // Only a small integer at byte[2] is a config-blob version (2..15). Everything
-    // else 'SQ*' is a command/reply marker (all ASCII, ≥0x20) — our own 'SQ<' / 'SQ{'
-    // / 'SQ!' / 'SQ V' replies included — so skip it: no spurious NAK, no reply loop.
-    if (b[2] < 2 || b[2] > 15)
-        return ProcessMessage::CONTINUE;
+    // Our own 'SQ<' / 'SQ{' / 'SQ!' / 'SQV' replies, and raw-forward telemetry: not
+    // commands. Dropping them here is what stops a reply loop and a spurious NAK for
+    // every packet we send.
+    case SQ_CMD_OWN_REPLY:
+    case SQ_CMD_IGNORE:
+        break;
+    }
 
-    applyConfigBlob(b, n, mp.from);   // applies + replies 'SQ!' with the apply status
     return ProcessMessage::CONTINUE;
 }
 
@@ -504,18 +488,15 @@ void ModbusModule::rawBridge(const uint8_t *req, size_t reqlen, uint32_t replyTo
     // The request carries its own link params so the converter is independent of
     // the polling config: a 6-byte header  baud(u32 LE) parity(u8) stop(u8)  then
     // the raw bytes to put on the wire. (Shorter request ⇒ legacy: use g_cfg.)
-    uint32_t     baud = g_cfg.modbus.baud;
-    hal_parity_t par  = g_cfg.modbus.parity;
-    uint8_t      stop = g_cfg.modbus.stop_bits;
-    const uint8_t *data = req;
-    size_t         datalen = reqlen;
-    if (reqlen >= 6) {
-        baud = (uint32_t)req[0] | ((uint32_t)req[1] << 8) | ((uint32_t)req[2] << 16) | ((uint32_t)req[3] << 24);
-        par  = (hal_parity_t)req[4];
-        stop = req[5] ? req[5] : 1;
-        data = req + 6;
-        datalen = reqlen - 6;
-    }
+    // Parsing lives in firmware_core/sqcmd.c — the "6 or more bytes means header"
+    // rule silently mis-reads a bare Modbus frame, so it is pinned by a host test.
+    sq_bridge_req_t br;
+    sq_parse_bridge_request(req, reqlen, &g_cfg.modbus, &br);
+    const uint32_t     baud    = br.baud;
+    const hal_parity_t par     = (hal_parity_t)br.parity;
+    const uint8_t      stop    = br.stop_bits;
+    const uint8_t     *data    = br.frame;
+    const size_t       datalen = br.frame_len;
 
     // Bring the RS485 UART up at the requested link params (the periodic poller may
     // be disabled or not yet have run, but the bridge must work regardless).
