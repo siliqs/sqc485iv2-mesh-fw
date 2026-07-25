@@ -39,7 +39,7 @@ void test_modbus_reads_holding_registers(void)
 
     sq_modbus_t mb = link_defaults();
     uint8_t out[OUT_CAP], err = 0xFF;
-    size_t n = modbus_read_raw(&mb, 1, 3, 0, 2, out, sizeof(out), &err);
+    size_t n = modbus_read_raw(&mb, 1, 3, 0, 2, out, sizeof(out), &err, NULL);
 
     ASSERT_EQ(SQ_MB_OK, err);
     ASSERT_EQ(6, n); /* raw-forward = [addr][func] + 2*reg_count, no bytecount, no CRC */
@@ -58,7 +58,7 @@ void test_modbus_request_frame_is_well_formed(void)
 
     sq_modbus_t mb = link_defaults();
     uint8_t out[OUT_CAP], err;
-    modbus_read_raw(&mb, 1, 3, 0, 2, out, sizeof(out), &err);
+    modbus_read_raw(&mb, 1, 3, 0, 2, out, sizeof(out), &err, NULL);
 
     size_t len = 0;
     const uint8_t *tx = mock_serial_tx(0, &len);
@@ -76,7 +76,7 @@ void test_modbus_encodes_16bit_register_fields(void)
 
     sq_modbus_t mb = link_defaults();
     uint8_t out[OUT_CAP], err;
-    modbus_read_raw(&mb, 0x11, 4, 0x0ABC, 16, out, sizeof(out), &err);
+    modbus_read_raw(&mb, 0x11, 4, 0x0ABC, 16, out, sizeof(out), &err, NULL);
     ASSERT_EQ(SQ_MB_OK, err);
 
     size_t len = 0;
@@ -99,7 +99,7 @@ void test_modbus_de_turnaround_order(void)
 
     sq_modbus_t mb = link_defaults();
     uint8_t out[OUT_CAP], err;
-    modbus_read_raw(&mb, 1, 3, 0, 2, out, sizeof(out), &err);
+    modbus_read_raw(&mb, 1, 3, 0, 2, out, sizeof(out), &err, NULL);
 
     /* '+' tx on, 'W' write, 'F' flush, '-' tx off, 'R' read */
     const char *log = mock_serial_log();
@@ -113,7 +113,7 @@ void test_modbus_max_register_count(void)
 
     sq_modbus_t mb = link_defaults();
     uint8_t out[OUT_CAP], err;
-    size_t n = modbus_read_raw(&mb, 1, 3, 0, SQ_MAX_REGS, out, sizeof(out), &err);
+    size_t n = modbus_read_raw(&mb, 1, 3, 0, SQ_MAX_REGS, out, sizeof(out), &err, NULL);
 
     ASSERT_EQ(SQ_MB_OK, err);
     ASSERT_EQ(2 + 2 * SQ_MAX_REGS, n);
@@ -137,7 +137,7 @@ void test_modbus_handles_both_echo_polarities(void)
 
         sq_modbus_t mb = link_defaults();
         uint8_t out[OUT_CAP], err = 0xFF;
-        size_t n = modbus_read_raw(&mb, 1, 3, 0, 2, out, sizeof(out), &err);
+        size_t n = modbus_read_raw(&mb, 1, 3, 0, 2, out, sizeof(out), &err, NULL);
 
         ASSERT_EQ(SQ_MB_OK, err);
         ASSERT_EQ(6, n);
@@ -154,7 +154,7 @@ static void assert_read_fails(mock_rsp_t mode, uint8_t expect_err, size_t expect
 
     sq_modbus_t mb = link_defaults();
     uint8_t out[OUT_CAP], err = 0xFF;
-    size_t n = modbus_read_raw(&mb, 1, 3, 0, 2, out, sizeof(out), &err);
+    size_t n = modbus_read_raw(&mb, 1, 3, 0, 2, out, sizeof(out), &err, NULL);
 
     ASSERT_EQ(0, n);
     ASSERT_EQ(expect_err, err);
@@ -201,11 +201,67 @@ void test_modbus_reports_exception_replies(void)
 
         sq_modbus_t mb = link_defaults();
         uint8_t out[OUT_CAP], err = 0xFF;
-        size_t n = modbus_read_raw(&mb, 1, 3, 0, 2, out, sizeof(out), &err);
+        size_t n = modbus_read_raw(&mb, 1, 3, 0, 2, out, sizeof(out), &err, NULL);
 
         ASSERT_EQ(0, n);
         ASSERT_EQ(SQ_MB_ERR_EXCEPTION, err);
     }
+}
+
+/* Knowing the slave refused is not enough to act on. 0x02 "register absent" means
+ * the poll plan is wrong; 0x06 "device busy" means the plan is fine and the device
+ * is not. So the code comes back to the caller. */
+void test_modbus_reports_the_exception_code(void)
+{
+    const uint8_t codes[] = {SQ_MB_EXC_ILLEGAL_FUNCTION, SQ_MB_EXC_ILLEGAL_ADDRESS, SQ_MB_EXC_DEVICE_BUSY, 0x7F};
+
+    for (size_t i = 0; i < sizeof(codes); i++) {
+        fresh();
+        mock_serial_set_mode(MOCK_RSP_EXCEPTION);
+        mock_serial_set_exception_code(codes[i]);
+
+        sq_modbus_t mb = link_defaults();
+        uint8_t out[OUT_CAP], err = 0xFF, exc = 0xFF;
+        modbus_read_raw(&mb, 1, 3, 0, 2, out, sizeof(out), &err, &exc);
+
+        ASSERT_EQ(SQ_MB_ERR_EXCEPTION, err);
+        ASSERT_EQ(codes[i], exc);
+    }
+}
+
+/* Anything that is not a refusal must leave the code at 0, so a caller cannot
+ * mistake a stale value for a reason. */
+void test_modbus_exception_code_is_zero_for_other_outcomes(void)
+{
+    const struct {
+        mock_rsp_t mode;
+        uint8_t expect_err;
+    } cases[] = {
+        {MOCK_RSP_GOOD, SQ_MB_OK},
+        {MOCK_RSP_SILENT, SQ_MB_ERR_TIMEOUT},
+        {MOCK_RSP_BAD_CRC, SQ_MB_ERR_CRC},
+        {MOCK_RSP_WRONG_SLAVE, SQ_MB_ERR_MISMATCH},
+        {MOCK_RSP_BAD_BYTECOUNT, SQ_MB_ERR_SHORT},
+    };
+
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        fresh();
+        mock_serial_set_mode(cases[i].mode);
+
+        sq_modbus_t mb = link_defaults();
+        uint8_t out[OUT_CAP], err = 0xFF, exc = 0xAA;
+        modbus_read_raw(&mb, 1, 3, 0, 2, out, sizeof(out), &err, &exc);
+
+        ASSERT_EQ(cases[i].expect_err, err);
+        ASSERT_EQ(0, exc);
+    }
+
+    /* Rejected before anything reaches the bus. */
+    fresh();
+    sq_modbus_t mb = link_defaults();
+    uint8_t out[OUT_CAP], err, exc = 0xAA;
+    modbus_read_raw(&mb, 1, 3, 0, 0, out, sizeof(out), &err, &exc);
+    ASSERT_EQ(0, exc);
 }
 
 /* Which refusals are worth repeating is the slave's own answer to give — the
@@ -247,7 +303,7 @@ void test_modbus_permanent_exception_stops_on_the_first_answer(void)
 
         sq_modbus_t mb = link_defaults(); /* retries = 3 */
         uint8_t out[OUT_CAP], err = 0xFF;
-        size_t n = modbus_read_raw(&mb, 1, 3, 0, 2, out, sizeof(out), &err);
+        size_t n = modbus_read_raw(&mb, 1, 3, 0, 2, out, sizeof(out), &err, NULL);
 
         ASSERT_EQ(0, n);
         ASSERT_EQ(SQ_MB_ERR_EXCEPTION, err);
@@ -270,7 +326,7 @@ void test_modbus_transient_exception_uses_the_retry_budget(void)
 
         sq_modbus_t mb = link_defaults();
         uint8_t out[OUT_CAP], err = 0xFF;
-        modbus_read_raw(&mb, 1, 3, 0, 2, out, sizeof(out), &err);
+        modbus_read_raw(&mb, 1, 3, 0, 2, out, sizeof(out), &err, NULL);
 
         ASSERT_EQ(SQ_MB_ERR_EXCEPTION, err);
         ASSERT_EQ(4, mock_serial_tx_count()); /* retries=3 -> 4 attempts */
@@ -289,7 +345,7 @@ void test_modbus_recovers_after_a_busy_exception(void)
 
     sq_modbus_t mb = link_defaults();
     uint8_t out[OUT_CAP], err = 0xFF;
-    size_t n = modbus_read_raw(&mb, 1, 3, 0, 1, out, sizeof(out), &err);
+    size_t n = modbus_read_raw(&mb, 1, 3, 0, 1, out, sizeof(out), &err, NULL);
 
     ASSERT_EQ(SQ_MB_OK, err);
     ASSERT_EQ(4, n);
@@ -308,7 +364,7 @@ void test_modbus_corrupt_exception_frame_is_a_crc_error(void)
 
     sq_modbus_t mb = link_defaults();
     uint8_t out[OUT_CAP], err = 0xFF;
-    modbus_read_raw(&mb, 1, 3, 0, 2, out, sizeof(out), &err);
+    modbus_read_raw(&mb, 1, 3, 0, 2, out, sizeof(out), &err, NULL);
 
     ASSERT_EQ(SQ_MB_ERR_CRC, err);
 }
@@ -321,13 +377,13 @@ void test_modbus_rejects_invalid_register_count(void)
 
     fresh();
     mock_serial_set_mode(MOCK_RSP_GOOD);
-    ASSERT_EQ(0, modbus_read_raw(&mb, 1, 3, 0, 0, out, sizeof(out), &err));
+    ASSERT_EQ(0, modbus_read_raw(&mb, 1, 3, 0, 0, out, sizeof(out), &err, NULL));
     ASSERT_EQ(SQ_MB_ERR_SHORT, err);
     ASSERT_EQ(0, mock_serial_tx_count());
 
     fresh();
     mock_serial_set_mode(MOCK_RSP_GOOD);
-    ASSERT_EQ(0, modbus_read_raw(&mb, 1, 3, 0, SQ_MAX_REGS + 1, out, sizeof(out), &err));
+    ASSERT_EQ(0, modbus_read_raw(&mb, 1, 3, 0, SQ_MAX_REGS + 1, out, sizeof(out), &err, NULL));
     ASSERT_EQ(SQ_MB_ERR_SHORT, err);
     ASSERT_EQ(0, mock_serial_tx_count());
 }
@@ -339,7 +395,7 @@ void test_modbus_rejects_undersized_output_buffer(void)
 
     sq_modbus_t mb = link_defaults();
     uint8_t out[OUT_CAP], err;
-    ASSERT_EQ(0, modbus_read_raw(&mb, 1, 3, 0, 2, out, 5, &err)); /* needs 6 */
+    ASSERT_EQ(0, modbus_read_raw(&mb, 1, 3, 0, 2, out, 5, &err, NULL)); /* needs 6 */
     ASSERT_EQ(SQ_MB_ERR_SHORT, err);
     ASSERT_EQ(0, mock_serial_tx_count());
 }
@@ -355,7 +411,7 @@ void test_modbus_retry_recovers_from_a_glitch(void)
 
     sq_modbus_t mb = link_defaults();
     uint8_t out[OUT_CAP], err = 0xFF;
-    size_t n = modbus_read_raw(&mb, 1, 3, 0, 1, out, sizeof(out), &err);
+    size_t n = modbus_read_raw(&mb, 1, 3, 0, 1, out, sizeof(out), &err, NULL);
 
     ASSERT_EQ(SQ_MB_OK, err);
     ASSERT_EQ(4, n);
@@ -376,7 +432,7 @@ void test_modbus_retry_count_is_honoured(void)
         mb.retries = retries[i];
 
         uint8_t out[OUT_CAP], err;
-        ASSERT_EQ(0, modbus_read_raw(&mb, 1, 3, 0, 2, out, sizeof(out), &err));
+        ASSERT_EQ(0, modbus_read_raw(&mb, 1, 3, 0, 2, out, sizeof(out), &err, NULL));
         ASSERT_EQ(retries[i] + 1, mock_serial_tx_count());
     }
 }
@@ -393,7 +449,7 @@ void test_modbus_timeout_budget_is_bounded(void)
     mb.retries = 2;
 
     uint8_t out[OUT_CAP], err;
-    modbus_read_raw(&mb, 1, 3, 0, 2, out, sizeof(out), &err);
+    modbus_read_raw(&mb, 1, 3, 0, 2, out, sizeof(out), &err, NULL);
 
     ASSERT_EQ(3 * (250 + 20), mock_time_now());
 }
@@ -406,7 +462,7 @@ void test_modbus_success_costs_no_delay(void)
 
     sq_modbus_t mb = link_defaults();
     uint8_t out[OUT_CAP], err;
-    modbus_read_raw(&mb, 1, 3, 0, 2, out, sizeof(out), &err);
+    modbus_read_raw(&mb, 1, 3, 0, 2, out, sizeof(out), &err, NULL);
 
     ASSERT_EQ(SQ_MB_OK, err);
     ASSERT_EQ(0, mock_time_now());

@@ -143,6 +143,98 @@ void test_poll_error_frame_carries_the_error_code(void)
     ASSERT_EQ(SQ_MB_ERR_CRC, pay[3]);
 }
 
+/* When the slave refuses, byte 3 carries ITS reason rather than a second copy of
+   ours. That is the difference between "fix the poll plan" and "check the
+   device", and it is the only place in the payload where it can be seen. */
+void test_poll_error_frame_carries_the_slave_exception_code(void)
+{
+    fresh();
+    mock_serial_set_mode(MOCK_RSP_EXCEPTION);
+    mock_serial_set_exception_code(SQ_MB_EXC_ILLEGAL_ADDRESS);
+
+    sq_config_t c;
+    plan(&c, 1);
+    c.polls[0].slave = 3;
+    c.polls[0].function = 3;
+    c.polls[0].reg_count = 2;
+
+    uint8_t pay[PAY_CAP];
+    size_t n = poll_collect_raw(&c, pay, sizeof(pay));
+
+    const uint8_t expect[6] = {
+        0x03,                      /* slave                        */
+        0x83,                      /* function | 0x80              */
+        SQ_MB_ERR_EXCEPTION,       /* our error code, byte 2       */
+        SQ_MB_EXC_ILLEGAL_ADDRESS, /* the slave's reason, byte 3   */
+        SQ_MB_ERR_EXCEPTION,       /* padding continues unchanged  */
+        SQ_MB_ERR_EXCEPTION,
+    };
+    ASSERT_EQ(sizeof(expect), n);
+    ASSERT_MEM_EQ(expect, pay, sizeof(expect));
+}
+
+/* The narrowest poll still has room: reg_count >= 1 means outlen >= 4, so byte 3
+   always exists and the exception code is never truncated away. */
+void test_poll_exception_code_fits_the_narrowest_poll(void)
+{
+    fresh();
+    mock_serial_set_mode(MOCK_RSP_EXCEPTION);
+    mock_serial_set_exception_code(SQ_MB_EXC_DEVICE_BUSY);
+
+    sq_config_t c;
+    plan(&c, 1);
+    c.polls[0].slave = 1;
+    c.polls[0].function = 4;
+    c.polls[0].reg_count = 1; /* the smallest a poll can be */
+
+    uint8_t pay[PAY_CAP];
+    size_t n = poll_collect_raw(&c, pay, sizeof(pay));
+
+    ASSERT_EQ(4, n);
+    ASSERT_EQ(0x84, pay[1]);
+    ASSERT_EQ(SQ_MB_ERR_EXCEPTION, pay[2]);
+    ASSERT_EQ(SQ_MB_EXC_DEVICE_BUSY, pay[3]);
+}
+
+/* THE COMPATIBILITY GUARANTEE.
+   Byte 3 only changes meaning for refusals. Every other error frame is padded
+   exactly as before, so a decoder written against the old format sees no
+   difference — and it can never have seen a refusal frame, because
+   SQ_MB_ERR_EXCEPTION was unreachable until the reply length was read in
+   stages. */
+void test_poll_non_exception_frames_are_byte_identical(void)
+{
+    const struct {
+        mock_rsp_t mode;
+        uint8_t err;
+    } cases[] = {
+        {MOCK_RSP_SILENT, SQ_MB_ERR_TIMEOUT},
+        {MOCK_RSP_BAD_CRC, SQ_MB_ERR_CRC},
+        {MOCK_RSP_WRONG_SLAVE, SQ_MB_ERR_MISMATCH},
+        {MOCK_RSP_BAD_BYTECOUNT, SQ_MB_ERR_SHORT},
+    };
+
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        fresh();
+        mock_serial_set_mode(cases[i].mode);
+
+        sq_config_t c;
+        plan(&c, 1);
+        c.polls[0].slave = 5;
+        c.polls[0].function = 3;
+        c.polls[0].reg_count = 3;
+
+        uint8_t pay[PAY_CAP];
+        size_t n = poll_collect_raw(&c, pay, sizeof(pay));
+
+        ASSERT_EQ(8, n);
+        ASSERT_EQ(0x05, pay[0]);
+        ASSERT_EQ(0x83, pay[1]);
+        for (size_t k = 2; k < n; k++)
+            ASSERT_EQ(cases[i].err, pay[k]); /* every padding byte, byte 3 included */
+    }
+}
+
 /* Truncation must land on a poll boundary — half a poll would desync the cloud
    decoder for the whole rest of the payload. */
 void test_poll_truncates_on_a_poll_boundary(void)

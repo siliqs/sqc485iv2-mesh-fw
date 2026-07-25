@@ -48,5 +48,10 @@ uint16_t modbus_crc16(const uint8_t *buf, size_t len);
    (bytecount and CRC dropped — the raw-forward wire format). Handles DE,
    TX-echo strip, CRC validation and retries. Returns the byte count written to
    out (= 2 + 2*reg_count) on success, 0 on failure; *err set to SQ_MB_*. */
+/* *exception_code (may be NULL) receives the slave's Modbus exception code when
+   *err is SQ_MB_ERR_EXCEPTION, and 0 otherwise. Without it the caller knows only
+   that the slave refused, not whether the register is absent, the function
+   unsupported or the device merely busy — which is the difference between
+   "fix the poll plan" and "check the device". */
 size_t modbus_read_raw(const sq_modbus_t *mb, uint8_t slave, uint8_t func, uint16_t reg_start, uint16_t reg_count, uint8_t *out,
-                       size_t cap, uint8_t *err);
+                       size_t cap, uint8_t *err, uint8_t *exception_code);

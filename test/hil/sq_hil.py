@@ -491,12 +491,11 @@ def check_rs485(dev: Device, rep: Report, rs485_port: str):
         )
 
         # Decode the way the cloud does — from the config alone.
-        for poll, addr, func, data, error in sq.split_raw_payload(payload, plan.polls):
-            label = f"slave {addr} fc{func} @{poll.reg_start}×{poll.reg_count}"
-            if error:
-                rep.bad(f"{label}: error frame ({error})")
+        for reading in sq.split_raw_payload(payload, plan.polls):
+            if reading.error:
+                rep.bad(reading.describe())
             else:
-                rep.ok(f"{label} → {data.hex()}")
+                rep.ok(reading.describe())
 
         # ── a slave that refuses ─────────────────────────────────────────────
         # "Illegal data address" is what a real slave says when the poll plan
@@ -510,10 +509,17 @@ def check_rs485(dev: Device, rep: Report, rs485_port: str):
 
         decoded = sq.split_raw_payload(payload, plan.polls)
         rep.check(
-            all(err == "exception" for *_, err in decoded),
+            all(r.error == "exception" for r in decoded),
             "a refusing slave is reported as an exception, not a timeout",
-            f"errors were {[err for *_, err in decoded]}, expected 'exception' — "
+            f"errors were {[r.error for r in decoded]}, expected 'exception' — "
             "a wrong register in the plan would look like an unplugged cable",
+        )
+        # And the payload has to say WHICH refusal, or the technician still cannot
+        # tell "fix the poll plan" from "check the device".
+        rep.check(
+            all(r.exception_code == 0x02 for r in decoded),
+            f"the slave's own reason survives to the payload ({decoded[0].describe()})",
+            f"exception codes were {[r.exception_code for r in decoded]}, expected 0x02",
         )
         rep.check(
             len(slave.requests) == len(plan.polls),
@@ -545,8 +551,8 @@ def check_rs485(dev: Device, rep: Report, rs485_port: str):
 
         decoded = sq.split_raw_payload(payload, plan.polls)
         rep.check(
-            all(err for *_, err in decoded),
-            f"every poll reported an error frame ({decoded[0][-1]})",
+            all(r.error for r in decoded),
+            f"every poll reported an error frame ({decoded[0].error})",
             "a poll reported success against a slave that answered nothing",
         )
 

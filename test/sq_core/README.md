@@ -100,6 +100,15 @@ wrong. Writing the awkward behaviour down first is what made it safe to change:
   `test_poll_drops_polls_that_exceed_the_mesh_payload`, because it remains the
   backstop.
 
+- **A refusal did not say why.** Knowing the slave refused still leaves the two
+  actions it could call for indistinguishable: 0x02 "illegal data address" means
+  fix the poll plan, 0x06 "device busy" means look at the device. The error frame
+  now carries the slave's own exception code in byte 3, where it previously
+  repeated ours. Only refusal frames change, and no deployed decoder can ever
+  have seen one — `SQ_MB_ERR_EXCEPTION` was unreachable until the reply length
+  was read in stages. `test_poll_non_exception_frames_are_byte_identical` pins
+  that guarantee.
+
 - **Every exception consumed the whole retry budget.** Once exceptions were
   visible at all, the next question was whether repeating the request could
   help — and that is the slave's own answer to give. The Modbus spec splits its

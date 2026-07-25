@@ -56,7 +56,7 @@ CONFIG_STATUS = {
 # Bytes a mesh packet carries — meshtastic_Constants_DATA_PAYLOAD_LEN.
 MESH_PAYLOAD_LEN = 233
 
-# Modbus error codes padded into a failed poll's error frame (firmware_core/modbus.h)
+# Our own error codes, padded into a failed poll's error frame (firmware_core/modbus.h)
 MB_ERR = {
     0: "ok",
     1: "timeout",
@@ -64,6 +64,21 @@ MB_ERR = {
     3: "exception",
     4: "short",
     5: "mismatch",
+}
+
+# The slave's reason, carried in byte 3 of a refusal frame. MODBUS Application
+# Protocol V1.1b3 §7. The first group means the request is wrong, the rest mean
+# the device is — which is what tells a technician where to look.
+MB_EXCEPTION = {
+    0x01: "illegal function",
+    0x02: "illegal data address",
+    0x03: "illegal data value",
+    0x04: "server device failure",
+    0x05: "acknowledge",
+    0x06: "server device busy",
+    0x08: "memory parity error",
+    0x0A: "gateway path unavailable",
+    0x0B: "gateway target failed to respond",
 }
 
 
@@ -243,11 +258,32 @@ def parse_capability(payload: bytes) -> Capability:
     return Capability(proto, max_blob, features, firmware, product_id)
 
 
-def split_raw_payload(payload: bytes, polls: list[Poll]):
+@dataclass
+class Reading:
+    """One poll's slice of a raw-forward payload."""
+
+    poll: Poll
+    slave: int | None
+    function: int | None
+    data: bytes
+    error: str | None = None  # None when the read succeeded
+    exception_code: int | None = None  # the slave's own reason, refusals only
+
+    def describe(self) -> str:
+        where = f"slave {self.slave} fc{self.function} @{self.poll.reg_start}×{self.poll.reg_count}"
+        if self.error is None:
+            return f"{where} → {self.data.hex()}"
+        if self.exception_code is None:
+            return f"{where}: {self.error}"
+        return f"{where}: {self.error} ({MB_EXCEPTION.get(self.exception_code, 'unknown')}, 0x{self.exception_code:02X})"
+
+
+def split_raw_payload(payload: bytes, polls: list[Poll]) -> list[Reading]:
     """Slice a raw-forward payload the way the cloud decoder does — by config alone.
 
-    Returns one entry per poll: (poll, slave, function, data, error). ``error`` is
-    None on success, otherwise the code padded into the fixed-length error frame.
+    An error frame is [slave][function|0x80][sq_err][sq_err…]; when sq_err is
+    "exception" the slave answered and refused, and byte 3 carries ITS Modbus
+    exception code instead of a second copy of ours.
     """
     out = []
     at = 0
@@ -255,13 +291,15 @@ def split_raw_payload(payload: bytes, polls: list[Poll]):
         chunk = payload[at : at + poll.payload_len]
         at += poll.payload_len
         if len(chunk) < 2:
-            out.append((poll, None, None, b"", "truncated"))
+            out.append(Reading(poll, None, None, b"", "truncated"))
             continue
         slave, func = chunk[0], chunk[1]
         data = chunk[2:]
-        error = None
-        if func & 0x80:
-            code = data[0] if data else 0xFF
-            error = MB_ERR.get(code, f"unknown({code})")
-        out.append((poll, slave, func & 0x7F, data, error))
+        if not func & 0x80:
+            out.append(Reading(poll, slave, func, data))
+            continue
+        code = data[0] if data else 0xFF
+        error = MB_ERR.get(code, f"unknown({code})")
+        exception_code = data[1] if error == "exception" and len(data) > 1 else None
+        out.append(Reading(poll, slave, func & 0x7F, data, error, exception_code))
     return out

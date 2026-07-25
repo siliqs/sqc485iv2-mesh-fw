@@ -86,9 +86,11 @@ static uint8_t transact(const sq_modbus_t *mb, const uint8_t *req, size_t reqlen
 }
 
 size_t modbus_read_raw(const sq_modbus_t *mb, uint8_t slave, uint8_t func, uint16_t reg_start, uint16_t reg_count, uint8_t *out,
-                       size_t cap, uint8_t *err)
+                       size_t cap, uint8_t *err, uint8_t *exception_code)
 {
     *err = SQ_MB_ERR_TIMEOUT;
+    if (exception_code)
+        *exception_code = 0;
     if (reg_count == 0 || reg_count > SQ_MAX_REGS) {
         *err = SQ_MB_ERR_SHORT;
         return 0;
@@ -131,6 +133,8 @@ size_t modbus_read_raw(const sq_modbus_t *mb, uint8_t slave, uint8_t func, uint1
                    than spending the whole retry budget on a request that is
                    wrong by construction. */
                 *err = SQ_MB_ERR_EXCEPTION;
+                if (exception_code)
+                    *exception_code = body[2];
                 if (!modbus_exception_is_transient(body[2]))
                     return 0;
             } else if (body[1] != func) {
