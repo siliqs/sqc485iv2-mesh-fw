@@ -12,8 +12,7 @@
 #include "mock_board_layout.h"
 #include "mock_hal.h"
 
-_Static_assert(sizeof(mock_board_t) == sizeof(board_profile_t),
-               "board_profile_t changed size — update mock_board_layout.h");
+_Static_assert(sizeof(mock_board_t) == sizeof(board_profile_t), "board_profile_t changed size — update mock_board_layout.h");
 _Static_assert(_Alignof(mock_board_t) == _Alignof(board_profile_t),
                "board_profile_t changed alignment — update mock_board_layout.h");
 _Static_assert(offsetof(mock_board_t, name) == offsetof(board_profile_t, name),

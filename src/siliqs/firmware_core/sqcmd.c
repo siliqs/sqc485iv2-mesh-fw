@@ -65,8 +65,7 @@ uint8_t sq_bridge_reply_marker(sq_cmd_t cmd)
 void sq_parse_bridge_request(const uint8_t *body, size_t n, const sq_modbus_t *link, sq_bridge_req_t *out)
 {
     if (n >= SQ_BRIDGE_HEADER_LEN) {
-        out->baud = (uint32_t)body[0] | ((uint32_t)body[1] << 8) | ((uint32_t)body[2] << 16) |
-                    ((uint32_t)body[3] << 24);
+        out->baud = (uint32_t)body[0] | ((uint32_t)body[1] << 8) | ((uint32_t)body[2] << 16) | ((uint32_t)body[3] << 24);
         out->parity = body[4];
         out->stop_bits = body[5] ? body[5] : 1;
         out->frame = body + SQ_BRIDGE_HEADER_LEN;

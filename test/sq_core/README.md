@@ -50,17 +50,17 @@ feeds every reply the firmware can emit back into the classifier.
 
 ## Layout
 
-| Path | |
-| --- | --- |
-| `mock/` | HAL mocks: scriptable RS485 line, virtual clock, in-memory store |
-| `golden/` | blob fixtures + the independent generator that produces them |
-| `test_*.c` | one file per engine unit |
-| `tests.def` | the registry — a test not listed here does not run |
+| Path        |                                                                  |
+| ----------- | ---------------------------------------------------------------- |
+| `mock/`     | HAL mocks: scriptable RS485 line, virtual clock, in-memory store |
+| `golden/`   | blob fixtures + the independent generator that produces them     |
+| `test_*.c`  | one file per engine unit                                         |
+| `tests.def` | the registry — a test not listed here does not run               |
 
 ### The mocks are not the `14_` stubs
 
 [`14_SQC485Iv2_basic/firmware_core/stub/`](../../../14_SQC485Iv2_basic/firmware_core/stub/)
-simulates a *working* meter so the demo runs end to end. These mocks go further
+simulates a _working_ meter so the demo runs end to end. These mocks go further
 in three ways that unit tests need:
 
 - **The RS485 line is scriptable per attempt.** A real slave will not politely
@@ -80,7 +80,7 @@ The suite was written against the code as it stood, including the parts that wer
 wrong. Writing the awkward behaviour down first is what made it safe to change:
 
 - **A Modbus exception used to be reported as a timeout.** `transact()` waited for
-  the length a *successful* reply would have, so the 5-byte exception frame never
+  the length a _successful_ reply would have, so the 5-byte exception frame never
   completed. In the field that made "wrong register in the poll plan" identical to
   "cable unplugged". `transact()` now reads the function byte first and sizes the
   rest of the frame from it — see `test_modbus_reports_exception_replies`.

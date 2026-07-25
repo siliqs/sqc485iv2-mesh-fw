@@ -72,7 +72,9 @@ class ModbusSlave:
         )
         self._serial.reset_input_buffer()
         self._stop.clear()
-        self._thread = threading.Thread(target=self._serve, name="modbus-slave", daemon=True)
+        self._thread = threading.Thread(
+            target=self._serve, name="modbus-slave", daemon=True
+        )
         self._thread.start()
 
     def stop(self) -> None:
@@ -105,7 +107,7 @@ class ModbusSlave:
         return self.registers.get(addr, 0)
 
     def expected_data(self, reg_start: int, reg_count: int) -> bytes:
-        """The data bytes this slave would return — what the device must forward."""
+        """Return the data bytes this slave would serve — what the device must forward."""
         out = bytearray()
         for i in range(reg_count):
             out += self.value(reg_start + i).to_bytes(2, "big")
@@ -145,7 +147,9 @@ class ModbusSlave:
         serve = slave == self.slave_id and function in (3, 4) and not self.drop_requests
 
         with self._lock:
-            self._log.append(Request(slave, function, reg_start, reg_count, serve, time.monotonic()))
+            self._log.append(
+                Request(slave, function, reg_start, reg_count, serve, time.monotonic())
+            )
 
         if not serve:
             return

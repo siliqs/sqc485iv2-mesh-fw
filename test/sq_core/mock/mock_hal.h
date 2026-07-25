@@ -23,8 +23,8 @@ void mock_board_reset(void); /* v233 profile: DE inverted, TX echo on */
 
 /* ── virtual clock ────────────────────────────────────────────────────────── */
 void mock_time_reset(void);
-uint32_t mock_time_now(void);         /* ms since mock_time_reset() */
-void mock_time_advance(uint32_t ms);  /* used by the serial mock to charge timeouts */
+uint32_t mock_time_now(void);        /* ms since mock_time_reset() */
+void mock_time_advance(uint32_t ms); /* used by the serial mock to charge timeouts */
 
 /* ── RS485 line ───────────────────────────────────────────────────────────── */
 

@@ -61,8 +61,10 @@ jobs:
           path: |
             ~/.platformio
             .pio
-          key: pio-sqc485iv2-${{ hashFiles('platformio.ini', 'variants/esp32c3/**') }}
-          restore-keys: pio-sqc485iv2-
+          # Leading with the expression keeps gitleaks' generic-api-key rule from
+          # reading a long literal cache key as a credential.
+          key: ${{ runner.os }}-pio-sqc485iv2-${{ hashFiles('platformio.ini', 'variants/esp32c3/**') }}
+          restore-keys: ${{ runner.os }}-pio-sqc485iv2-
 
       - name: Build all SQC485Iv2 environments and check the image
         run: ./bin/sq-build-check.sh

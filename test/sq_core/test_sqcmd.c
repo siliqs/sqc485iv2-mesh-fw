@@ -146,8 +146,7 @@ void test_sqcmd_bridge_request_with_header(void)
     sq_modbus_t link = link_from_defaults();
 
     /* 19200, even parity, 2 stop bits, then an 8-byte Modbus frame */
-    const uint8_t body[] = {0x00, 0x4B, 0x00, 0x00, 0x01, 0x02,
-                            0x01, 0x03, 0x00, 0x00, 0x00, 0x02, 0xC4, 0x0B};
+    const uint8_t body[] = {0x00, 0x4B, 0x00, 0x00, 0x01, 0x02, 0x01, 0x03, 0x00, 0x00, 0x00, 0x02, 0xC4, 0x0B};
     sq_bridge_req_t req;
     sq_parse_bridge_request(body, sizeof(body), &link, &req);
 
@@ -208,7 +207,7 @@ void test_sqcmd_bare_modbus_frame_is_misread_as_a_header(void)
     sq_bridge_req_t req;
     sq_parse_bridge_request(bare, sizeof(bare), &link, &req);
 
-    ASSERT_TRUE(req.had_header);  /* it "found" a header that was never sent */
+    ASSERT_TRUE(req.had_header);     /* it "found" a header that was never sent */
     ASSERT_EQ(0x00000301, req.baud); /* 769 baud, from the slave/function bytes */
     ASSERT_EQ(2, req.frame_len);     /* only the CRC reaches the wire */
     ASSERT_EQ(0xC4, req.frame[0]);

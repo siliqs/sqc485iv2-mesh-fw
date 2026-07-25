@@ -50,7 +50,9 @@ class SerialEcho:
         )
         self._serial.reset_input_buffer()
         self._stop.clear()
-        self._thread = threading.Thread(target=self._serve, name="serial-echo", daemon=True)
+        self._thread = threading.Thread(
+            target=self._serve, name="serial-echo", daemon=True
+        )
         self._thread.start()
 
     def stop(self) -> None:

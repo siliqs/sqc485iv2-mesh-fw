@@ -86,8 +86,8 @@ void test_blob_flag_bits(void)
         bool confirmed;
         uint8_t expect;
     } cases[] = {
-        {true, false, false, 0x00},  {false, false, false, 0x01}, {true, true, false, 0x02},
-        {true, false, true, 0x04},   {false, true, true, 0x07},
+        {true, false, false, 0x00}, {false, false, false, 0x01}, {true, true, false, 0x02},
+        {true, false, true, 0x04},  {false, true, true, 0x07},
     };
 
     for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
@@ -338,7 +338,7 @@ void test_blob_rejects_crc_mismatch(void)
     blob[10] ^= 0x01; /* one bit, in the middle of the name field */
     assert_rejected_and_config_intact("corrupted payload", blob, n);
 
-    blob[10] ^= 0x01;   /* restore */
+    blob[10] ^= 0x01;    /* restore */
     blob[n - 1] ^= 0xFF; /* corrupt the CRC itself */
     assert_rejected_and_config_intact("corrupted crc", blob, n);
 }

@@ -12,13 +12,11 @@ from __future__ import annotations
 import queue
 import time
 
-import serial
-from pubsub import pub
-
 import meshtastic
 import meshtastic.serial_interface
-
+import serial
 import sq_protocol as sq
+from pubsub import pub
 
 
 class DeviceError(RuntimeError):
@@ -50,7 +48,7 @@ class Device:
         handshake fails, so the port is drained raw before the library sees it.
         """
         last = None
-        for attempt in range(attempts):
+        for _attempt in range(attempts):
             try:
                 with serial.Serial(self.port, 115200, timeout=0.5) as raw:
                     raw.reset_input_buffer()
@@ -58,15 +56,21 @@ class Device:
                 time.sleep(0.3)
 
                 pub.subscribe(self._on_receive, "meshtastic.receive")
-                self.iface = meshtastic.serial_interface.SerialInterface(devPath=self.port)
+                self.iface = meshtastic.serial_interface.SerialInterface(
+                    devPath=self.port
+                )
                 self.iface.waitForConfig()
                 self.node_num = self.iface.getMyNodeInfo()["num"]
                 return
-            except Exception as exc:  # noqa: BLE001 — retry on anything, report the last
+            except (
+                Exception
+            ) as exc:  # noqa: BLE001 — retry on anything, report the last
                 last = exc
                 self._teardown()
                 time.sleep(1.0)
-        raise DeviceError(f"could not connect to {self.port} after {attempts} attempts: {last}")
+        raise DeviceError(
+            f"could not connect to {self.port} after {attempts} attempts: {last}"
+        )
 
     def _teardown(self) -> None:
         try:
@@ -116,7 +120,9 @@ class Device:
         while True:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
-                raise DeviceError(f"timed out after {timeout:.1f}s waiting for {marker!r}")
+                raise DeviceError(
+                    f"timed out after {timeout:.1f}s waiting for {marker!r}"
+                )
             try:
                 at, payload = self._rx.get(timeout=remaining)
             except queue.Empty:
@@ -124,7 +130,9 @@ class Device:
             if payload.startswith(marker):
                 return payload, at - started
 
-    def request(self, command: bytes, marker: bytes, timeout: float = 6.0) -> tuple[bytes, float]:
+    def request(
+        self, command: bytes, marker: bytes, timeout: float = 6.0
+    ) -> tuple[bytes, float]:
         self.drain()
         self.send(command)
         return self.await_reply(marker, timeout)
@@ -168,8 +176,14 @@ class Device:
                 continue  # one of our own command/reply markers
             return payload, at - started
 
-    def rs485_bridge(self, frame: bytes, baud: int = 9600, parity: int = 0, stop_bits: int = 1,
-                     timeout: float = 6.0) -> bytes:
+    def rs485_bridge(
+        self,
+        frame: bytes,
+        baud: int = 9600,
+        parity: int = 0,
+        stop_bits: int = 1,
+        timeout: float = 6.0,
+    ) -> bytes:
         """Put raw bytes on the RS485 line and return whatever the slave answered.
 
         The link parameters travel with the request (see sq.bridge_request) — the
@@ -177,7 +191,9 @@ class Device:
         does not fall back to it, it corrupts the frame.
         """
         payload, _ = self.request(
-            sq.bridge_request(frame, baud, parity, stop_bits), sq.RPL_RS485_BRIDGE, timeout
+            sq.bridge_request(frame, baud, parity, stop_bits),
+            sq.RPL_RS485_BRIDGE,
+            timeout,
         )
         return payload[3:]
 

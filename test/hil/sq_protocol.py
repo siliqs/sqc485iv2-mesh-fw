@@ -19,7 +19,16 @@ from dataclasses import dataclass, field
 
 _GOLDEN = pathlib.Path(__file__).resolve().parents[1] / "sq_core" / "golden"
 sys.path.insert(0, str(_GOLDEN))
-from make_golden import FLAG_CONFIRMED, FLAG_RS485_OFF, FLAG_TUNNEL_ON, build as build_blob, crc16  # noqa: E402
+
+import make_golden  # noqa: E402 — the sys.path insert above has to come first
+
+# Re-exported by name rather than `from … import`, so isort has nothing to split
+# and the single noqa above stays attached to the one import that needs it.
+FLAG_CONFIRMED = make_golden.FLAG_CONFIRMED
+FLAG_RS485_OFF = make_golden.FLAG_RS485_OFF
+FLAG_TUNNEL_ON = make_golden.FLAG_TUNNEL_ON
+build_blob = make_golden.build
+crc16 = make_golden.crc16
 
 # Private application PortNum — SILIQS_MODBUS_PORTNUM in ModbusModule.h.
 PORTNUM = 256
@@ -78,7 +87,11 @@ class Capability:
     }
 
     def feature_list(self) -> list[str]:
-        return [name for bit, name in sorted(self.FEATURE_NAMES.items()) if self.features & bit]
+        return [
+            name
+            for bit, name in sorted(self.FEATURE_NAMES.items())
+            if self.features & bit
+        ]
 
 
 @dataclass
@@ -198,7 +211,9 @@ def parse_blob(blob: bytes) -> Config:
     return cfg
 
 
-def bridge_request(frame: bytes, baud: int = 9600, parity: int = 0, stop_bits: int = 1) -> bytes:
+def bridge_request(
+    frame: bytes, baud: int = 9600, parity: int = 0, stop_bits: int = 1
+) -> bytes:
     """Build an 'SQ>' raw-bridge request: marker + link header + the bytes to send.
 
     The 6-byte link header is not optional in practice. rawBridge() treats ANY

@@ -326,9 +326,9 @@ A well-structured test suite follows this pattern:
 Two suites in this directory are specific to the SQC485Iv2 product and do not use
 the PlatformIO test runner at all:
 
-| Suite | Runs on | |
-| --- | --- | --- |
+| Suite                  | Runs on                   |                                                                                            |
+| ---------------------- | ------------------------- | ------------------------------------------------------------------------------------------ |
 | [`sq_core/`](sq_core/) | the host, no dependencies | `firmware_core` — config blob wire format, Modbus RTU master, raw-forward payload assembly |
-| [`hil/`](hil/) | a real board over USB | capability handshake, certified radio profile, config round trip, RS485 end to end |
+| [`hil/`](hil/)         | a real board over USB     | capability handshake, certified radio profile, config round trip, RS485 end to end         |
 
 `../bin/sq-test.sh` is the entry point for both.

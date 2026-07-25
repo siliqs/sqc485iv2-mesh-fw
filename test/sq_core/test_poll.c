@@ -113,9 +113,9 @@ void test_poll_mixed_results_stay_aligned(void)
     size_t n = poll_collect_raw(&c, pay, sizeof(pay));
 
     const uint8_t expect[14] = {
-        0x01, 0x03, 0xAA, 0xAA,                         /* ok      */
-        0x02, 0x83, 0x01, 0x01, 0x01, 0x01,             /* failed, still 6 bytes */
-        0x03, 0x03, 0xCC, 0xCC,                         /* ok, at the right offset */
+        0x01, 0x03, 0xAA, 0xAA,             /* ok      */
+        0x02, 0x83, 0x01, 0x01, 0x01, 0x01, /* failed, still 6 bytes */
+        0x03, 0x03, 0xCC, 0xCC,             /* ok, at the right offset */
     };
     ASSERT_EQ(sizeof(expect), n);
     ASSERT_MEM_EQ(expect, pay, sizeof(expect));

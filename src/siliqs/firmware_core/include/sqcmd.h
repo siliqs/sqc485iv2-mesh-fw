@@ -84,9 +84,9 @@ size_t sq_build_get_config_reply(const sq_config_t *cfg, uint8_t *out, size_t ca
 /* 'S','Q','!', status */
 #define SQ_CONFIG_ACK_LEN 4
 
-#define SQ_CFG_OK             0 /* applied and persisted                            */
-#define SQ_CFG_INVALID        1 /* bad magic / unknown version / length / CRC       */
-#define SQ_CFG_NOT_PERSISTED  2 /* valid, but the store rejected it                 */
+#define SQ_CFG_OK 0             /* applied and persisted                            */
+#define SQ_CFG_INVALID 1        /* bad magic / unknown version / length / CRC       */
+#define SQ_CFG_NOT_PERSISTED 2  /* valid, but the store rejected it                 */
 #define SQ_CFG_PLAN_TOO_LARGE 3 /* valid, but its payload cannot fit one packet     */
 
 size_t sq_build_config_ack(uint8_t status, uint8_t *out, size_t cap);

@@ -40,8 +40,7 @@ int sq_report(void)
 {
     printf("\n");
     if (sq_failed_tests) {
-        printf("\033[31mFAILED\033[0m  %d/%d tests, %d/%d assertions\n", sq_failed_tests, sq_tests, sq_failed_checks,
-               sq_checks);
+        printf("\033[31mFAILED\033[0m  %d/%d tests, %d/%d assertions\n", sq_failed_tests, sq_tests, sq_failed_checks, sq_checks);
         return 1;
     }
     printf("\033[32mPASSED\033[0m  %d tests, %d assertions\n", sq_tests, sq_checks);

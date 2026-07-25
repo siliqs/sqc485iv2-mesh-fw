@@ -1,9 +1,9 @@
 /* modbus.c — portable Modbus-RTU master, raw-forward output. */
-#include <string.h>
 #include "modbus.h"
 #include "board_profile.h"
 #include "hal/hal_serial.h"
 #include "hal/hal_time.h"
+#include <string.h>
 
 uint16_t modbus_crc16(const uint8_t *buf, size_t len)
 {
@@ -37,8 +37,7 @@ static bool read_exact(uint8_t *dst, size_t want, uint32_t to_ms)
 /* One transaction. Sends req, then reads the reply into body[] and reports how
    long it turned out to be — a Modbus exception is 5 bytes regardless of how many
    registers were asked for. Returns SQ_MB_OK or an error. */
-static uint8_t transact(const sq_modbus_t *mb, const uint8_t *req, size_t reqlen,
-                        uint8_t *body, size_t exp, size_t *body_len)
+static uint8_t transact(const sq_modbus_t *mb, const uint8_t *req, size_t reqlen, uint8_t *body, size_t exp, size_t *body_len)
 {
     hal_serial_set_tx(true);
     hal_serial_write(req, reqlen);
@@ -49,29 +48,35 @@ static uint8_t transact(const sq_modbus_t *mb, const uint8_t *req, size_t reqlen
        back. Drain exactly that much before listening for the slave. */
     if (BOARD.rs485_tx_echo) {
         uint8_t echo[8];
-        if (reqlen > sizeof(echo)) return SQ_MB_ERR_SHORT;
-        if (!read_exact(echo, reqlen, mb->response_timeout_ms)) return SQ_MB_ERR_TIMEOUT;
+        if (reqlen > sizeof(echo))
+            return SQ_MB_ERR_SHORT;
+        if (!read_exact(echo, reqlen, mb->response_timeout_ms))
+            return SQ_MB_ERR_TIMEOUT;
     }
 
     /* Address and function first: the function's high bit is what says whether
        the rest of this frame is a full reply or a 5-byte exception. Asking for
        `exp` bytes up front is what used to turn every exception into a timeout —
        the short frame never completed, so the reason for the failure was lost. */
-    if (!read_exact(body, 2, mb->response_timeout_ms)) return SQ_MB_ERR_TIMEOUT;
+    if (!read_exact(body, 2, mb->response_timeout_ms))
+        return SQ_MB_ERR_TIMEOUT;
 
     size_t want = (body[1] & 0x80) ? SQ_MB_EXCEPTION_FRAME_LEN : exp;
-    if (!read_exact(body + 2, want - 2, mb->response_timeout_ms)) return SQ_MB_ERR_TIMEOUT;
+    if (!read_exact(body + 2, want - 2, mb->response_timeout_ms))
+        return SQ_MB_ERR_TIMEOUT;
 
     *body_len = want;
     return SQ_MB_OK;
 }
 
-size_t modbus_read_raw(const sq_modbus_t *mb, uint8_t slave, uint8_t func,
-                       uint16_t reg_start, uint16_t reg_count,
-                       uint8_t *out, size_t cap, uint8_t *err)
+size_t modbus_read_raw(const sq_modbus_t *mb, uint8_t slave, uint8_t func, uint16_t reg_start, uint16_t reg_count, uint8_t *out,
+                       size_t cap, uint8_t *err)
 {
     *err = SQ_MB_ERR_TIMEOUT;
-    if (reg_count == 0 || reg_count > SQ_MAX_REGS) { *err = SQ_MB_ERR_SHORT; return 0; }
+    if (reg_count == 0 || reg_count > SQ_MAX_REGS) {
+        *err = SQ_MB_ERR_SHORT;
+        return 0;
+    }
 
     uint8_t req[8];
     req[0] = slave;
@@ -84,35 +89,43 @@ size_t modbus_read_raw(const sq_modbus_t *mb, uint8_t slave, uint8_t func,
     req[6] = (uint8_t)(crc & 0xFF);
     req[7] = (uint8_t)(crc >> 8);
 
-    size_t exp    = 5 + 2u * reg_count;   /* [addr][func][bc][data][crc_lo][crc_hi] */
-    size_t outlen = 2 + 2u * reg_count;   /* [addr][func][data] */
-    if (outlen > cap) { *err = SQ_MB_ERR_SHORT; return 0; }
+    size_t exp = 5 + 2u * reg_count;    /* [addr][func][bc][data][crc_lo][crc_hi] */
+    size_t outlen = 2 + 2u * reg_count; /* [addr][func][data] */
+    if (outlen > cap) {
+        *err = SQ_MB_ERR_SHORT;
+        return 0;
+    }
 
     int attempts = (int)mb->retries + 1;
     for (int a = 0; a < attempts; a++) {
         uint8_t body[5 + 2 * SQ_MAX_REGS];
-        size_t  blen = 0;
+        size_t blen = 0;
         uint8_t e = transact(mb, req, sizeof(req), body, exp, &blen);
         if (e == SQ_MB_OK) {
             /* Checksum first — no field is worth reading out of a frame that did
                not survive the wire. */
             uint16_t rx_crc = (uint16_t)(body[blen - 2] | (body[blen - 1] << 8));
-            if (rx_crc != modbus_crc16(body, blen - 2))   { *err = SQ_MB_ERR_CRC; }
-            else if (body[0] != slave)           { *err = SQ_MB_ERR_MISMATCH; }
-            else if (body[1] & 0x80)             { *err = SQ_MB_ERR_EXCEPTION; }
-            else if (body[1] != func)            { *err = SQ_MB_ERR_MISMATCH; }
-            else if (body[2] != 2 * reg_count)   { *err = SQ_MB_ERR_SHORT; }
-            else {
-                out[0] = body[0];                /* addr */
-                out[1] = body[1];                /* func */
-                memcpy(out + 2, body + 3, 2u * reg_count);   /* data (skip bytecount) */
+            if (rx_crc != modbus_crc16(body, blen - 2)) {
+                *err = SQ_MB_ERR_CRC;
+            } else if (body[0] != slave) {
+                *err = SQ_MB_ERR_MISMATCH;
+            } else if (body[1] & 0x80) {
+                *err = SQ_MB_ERR_EXCEPTION;
+            } else if (body[1] != func) {
+                *err = SQ_MB_ERR_MISMATCH;
+            } else if (body[2] != 2 * reg_count) {
+                *err = SQ_MB_ERR_SHORT;
+            } else {
+                out[0] = body[0];                          /* addr */
+                out[1] = body[1];                          /* func */
+                memcpy(out + 2, body + 3, 2u * reg_count); /* data (skip bytecount) */
                 *err = SQ_MB_OK;
                 return outlen;
             }
         } else {
             *err = e;
         }
-        hal_delay(20);   /* inter-frame gap before retry */
+        hal_delay(20); /* inter-frame gap before retry */
     }
     return 0;
 }

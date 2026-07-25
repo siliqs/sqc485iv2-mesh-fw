@@ -19,7 +19,7 @@ test/hil/.venv/bin/python test/hil/sq_hil.py --strict-radio    # verifying a fac
 
 ## The rig
 
-```
+```text
   SQC485Iv2 ── USB ──┐
                      ├── this machine
   USB-RS485 dongle ──┘
@@ -37,13 +37,13 @@ seconds later with a protocol timeout that reads like a firmware bug.
 
 ## What it checks
 
-| | |
-| --- | --- |
-| **identity** | `SQV?` handshake: product id, capability proto, feature bits, and that the reported firmware matches `SQ_FW_VERSION` in this checkout |
-| **radio profile** | the *running* LoRa config against the Taiwan DTS envelope — 922.5 MHz, BW500, SF9, CR4:5, region TW, 22 dBm |
-| **config round trip** | writes a probe config, reads it back with `SQG?`, compares every field including the poll list |
-| **RS485 end to end** | installs a poll plan, serves known registers from the dongle, triggers `SQ?`, and asserts the forwarded payload is byte-exact |
-| **error path** | makes the slave go silent and asserts the payload is still full length, with error frames in the right slots |
+|                       |                                                                                                                                       |
+| --------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| **identity**          | `SQV?` handshake: product id, capability proto, feature bits, and that the reported firmware matches `SQ_FW_VERSION` in this checkout |
+| **radio profile**     | the _running_ LoRa config against the Taiwan DTS envelope — 922.5 MHz, BW500, SF9, CR4:5, region TW, 22 dBm                           |
+| **config round trip** | writes a probe config, reads it back with `SQG?`, compares every field including the poll list                                        |
+| **RS485 end to end**  | installs a poll plan, serves known registers from the dongle, triggers `SQ?`, and asserts the forwarded payload is byte-exact         |
+| **error path**        | makes the slave go silent and asserts the payload is still full length, with error frames in the right slots                          |
 
 It also records timings (config apply, poll-now round trip) — `--json` writes
 them out so they can be tracked across releases.
@@ -58,7 +58,7 @@ be restored by hand.
 ## The radio profile is a warning, not a failure
 
 By default a deviation from the certified profile is reported as a warning: these
-are factory *defaults*, and a user is allowed to change them from the app. Pass
+are factory _defaults_, and a user is allowed to change them from the app. Pass
 `--strict-radio` when what you are verifying is a factory image, where a
 deviation is a real defect.
 
@@ -69,13 +69,13 @@ that has been configured by hand may legitimately have it on.
 
 ⚠ A raw-bridge request is `SQ>` + **six bytes of link header** + the frame:
 
-```
+```text
 baud (u32 LE) | parity (u8) | stop_bits (u8) | frame…
 ```
 
 The header is positional and untagged, and `rawBridge()` decides it is present by
 length alone: six bytes or more means header. So an 8-byte Modbus read request —
-the most obvious thing to hand a raw bridge — is not rejected, it is *reinterpreted*:
+the most obvious thing to hand a raw bridge — is not rejected, it is _reinterpreted_:
 `01 03 00 00 00 02 C4 0B` becomes baud `0x00000301` (769), parity 0, stop 2, and a
 two-byte frame of `C4 0B`. The device then transmits garbage at 769 baud **and
 leaves its UART there**, so every later poll times out too.

@@ -42,7 +42,7 @@ FLAG_CONFIRMED = 0x04
 
 
 def crc16(data: bytes) -> int:
-    """Standard Modbus RTU CRC16 (poly 0xA001, init 0xFFFF)."""
+    """Compute the standard Modbus RTU CRC16 (poly 0xA001, init 0xFFFF)."""
     crc = 0xFFFF
     for byte in data:
         crc ^= byte

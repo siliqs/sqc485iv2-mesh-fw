@@ -13,11 +13,11 @@
 #include <string.h>
 
 /* ── runner state (defined in main.c) ─────────────────────────────────────── */
-extern int sq_checks;         /* assertions executed          */
-extern int sq_failed_checks;  /* assertions that failed       */
-extern int sq_tests;          /* test functions run           */
-extern int sq_failed_tests;   /* test functions with a failure */
-extern int sq_case_failures;  /* failures inside the current test */
+extern int sq_checks;        /* assertions executed          */
+extern int sq_failed_checks; /* assertions that failed       */
+extern int sq_tests;         /* test functions run           */
+extern int sq_failed_tests;  /* test functions with a failure */
+extern int sq_case_failures; /* failures inside the current test */
 
 void sq_run(const char *name, void (*fn)(void));
 int sq_report(void);
@@ -56,7 +56,7 @@ void sq_hexdump(const char *label, const uint8_t *b, size_t n);
         sq_checks++;                                                                                                             \
         long long _e = (long long)(expected), _a = (long long)(actual);                                                          \
         if (_e != _a)                                                                                                            \
-            SQ__FAILED("%s: expected %lld (0x%llX), got %lld (0x%llX)", #actual, _e, (unsigned long long)_e, _a,                  \
+            SQ__FAILED("%s: expected %lld (0x%llX), got %lld (0x%llX)", #actual, _e, (unsigned long long)_e, _a,                 \
                        (unsigned long long)_a);                                                                                  \
     } while (0)
 
@@ -65,7 +65,7 @@ void sq_hexdump(const char *label, const uint8_t *b, size_t n);
         sq_checks++;                                                                                                             \
         const char *_e = (expected), *_a = (actual);                                                                             \
         if (strcmp(_e, _a) != 0)                                                                                                 \
-            SQ__FAILED("%s: expected \"%s\", got \"%s\"", #actual, _e, _a);                                                       \
+            SQ__FAILED("%s: expected \"%s\", got \"%s\"", #actual, _e, _a);                                                      \
     } while (0)
 
 /* Byte-exact buffer comparison — dumps both sides on mismatch, which is what
@@ -73,10 +73,10 @@ void sq_hexdump(const char *label, const uint8_t *b, size_t n);
 #define ASSERT_MEM_EQ(expected, actual, len)                                                                                     \
     do {                                                                                                                         \
         sq_checks++;                                                                                                             \
-        const uint8_t *_e = (const uint8_t *)(expected), *_a = (const uint8_t *)(actual);                                         \
+        const uint8_t *_e = (const uint8_t *)(expected), *_a = (const uint8_t *)(actual);                                        \
         size_t _n = (size_t)(len);                                                                                               \
         if (memcmp(_e, _a, _n) != 0) {                                                                                           \
-            SQ__FAILED("%s: %zu bytes differ", #actual, _n);                                                                      \
+            SQ__FAILED("%s: %zu bytes differ", #actual, _n);                                                                     \
             sq_hexdump("expected", _e, _n);                                                                                      \
             sq_hexdump("actual  ", _a, _n);                                                                                      \
         }                                                                                                                        \
