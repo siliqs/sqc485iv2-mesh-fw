@@ -317,9 +317,22 @@ void setup()
     // initialize power HAL layer as early as possible
     powerHAL_init();
 
+#ifdef SQC485IV2
+    // Brownout mitigation (SQC485Iv2): on a weak 3.3V supply the RF bring-up current
+    // step sags the rail below the C3 brownout threshold (~2.51V) and the node boot-
+    // loops. Firmware can't fix a >0.8V sag (the real fix is bulk decoupling on 3.3V,
+    // which this hardware revision does not have), but it CAN shave the concurrent
+    // baseline so there's more headroom for the SX126x/BLE transient: run the boot at
+    // a low CPU clock and keep the boot LED off, then restore full clock + LED once
+    // the radio is up (see near initLoRa below).
+    setCpuFrequencyMhz(80);
+#endif
+
 #ifdef LED_POWER
     pinMode(LED_POWER, OUTPUT);
-    digitalWrite(LED_POWER, LED_STATE_ON);
+#ifndef SQC485IV2
+    digitalWrite(LED_POWER, LED_STATE_ON); // SQC485Iv2: deferred until after RF is up
+#endif
 #endif
 
     // prevent booting if device is in power failure mode
@@ -986,7 +999,21 @@ void setup()
 #endif
 #endif
 
+#ifdef SQC485IV2
+    delay(200); // let the rail settle before the SX126x power-up transient (brownout mitigation)
+#endif
+
     auto rIf = initLoRa();
+
+#ifdef SQC485IV2
+    // Radio is up — the biggest RF bring-up transient is past. Restore full clock (we ran
+    // the boot at 80 MHz to shave the concurrent current for brownout headroom) and only
+    // now light the boot LED.
+    setCpuFrequencyMhz(160);
+#ifdef LED_POWER
+    digitalWrite(LED_POWER, LED_STATE_ON);
+#endif
+#endif
 
     lateInitVariant(); // Do board specific init (see extra_variants/README.md for documentation)
 
