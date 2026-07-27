@@ -9,3 +9,6 @@
 
 meshtastic>=2.7,<3      # device API over the USB console
 pyserial>=3.5           # the RS485 dongle, and the raw bus diagnostics
+
+# host tests for the HIL helpers (fake peer, protocol codecs)
+pytest>=8

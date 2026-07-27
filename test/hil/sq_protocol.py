@@ -38,7 +38,8 @@ CMD_POLL_NOW = b"SQ?"
 CMD_CAPABILITY = b"SQV?"
 CMD_GET_CONFIG = b"SQG?"
 CMD_BLE_POWER = b"SQP"  # + int8 dBm
-CMD_RS485_BRIDGE = b"SQ>"  # + raw bytes to put on the bus
+CMD_RS485_BRIDGE = b"SQ>"  # + link header + raw bytes to put on the bus
+BRIDGE_HEADER_LEN = 6  # baud u32 LE + parity u8 + stop_bits u8
 
 # Reply markers (node -> host)
 RPL_CAPABILITY = b"SQV"

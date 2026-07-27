@@ -209,6 +209,7 @@ def check_config_roundtrip(dev: Device, rep: Report, saved_blob: bytes):
         confirmed=True,
     )
 
+    dev.quiesce()  # a node mid-poll against a dead bus cannot answer promptly
     started = time.monotonic()
     status = dev.apply_config(probe.to_blob())
     rep.timings["config apply"] = time.monotonic() - started
@@ -421,6 +422,7 @@ def check_rs485(dev: Device, rep: Report, rs485_port: str):
         uplink_interval_s=3600,  # keep periodic uplinks out of the way
         deep_sleep=False,  # and keep the node awake for the whole run
     )
+    dev.quiesce()
     if dev.apply_config(plan.to_blob()) != 0:
         rep.bad("could not install the RS485 test plan")
         return
@@ -620,7 +622,12 @@ def main() -> int:
                 rep.info("skipping the Modbus checks — the bus itself is not working")
         finally:
             rep.section("cleanup")
+            # A release gate must never be able to strand the board it is
+            # gating. Whatever failed above, the node goes back to the config it
+            # arrived with — and if even that cannot be done, the blob is printed
+            # so a human can put it back by hand.
             try:
+                dev.quiesce()  # stop it polling first; a busy node is hard to talk to
                 status = dev.apply_config(saved_blob)
                 rep.check(
                     status == 0,
@@ -629,6 +636,11 @@ def main() -> int:
                 )
             except DeviceError as exc:
                 rep.bad("could not restore the original configuration", str(exc))
+                rep.info("restore it by hand with:")
+                rep.info(
+                    f"  python3 test/hil/restore_config.py --port {device_port} "
+                    f"--blob {saved_blob.hex()}"
+                )
 
     elapsed = time.monotonic() - started
 

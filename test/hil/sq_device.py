@@ -10,6 +10,7 @@ and answers straight back to the attached client without touching the radio
 from __future__ import annotations
 
 import queue
+import sys
 import time
 
 import meshtastic
@@ -30,6 +31,10 @@ class Device:
         self.iface = None
         self.node_num = None
         self._rx: queue.Queue = queue.Queue()
+        # Callbacks that see every packet on the private portnum, sender included.
+        # The request/reply queue above is enough to DRIVE a node; answering as
+        # one (see fake_peer.py) needs to know who asked.
+        self._listeners: list = []
 
     # ── connection ───────────────────────────────────────────────────────────
 
@@ -89,12 +94,24 @@ class Device:
 
     # ── packet plumbing ──────────────────────────────────────────────────────
 
+    def add_listener(self, fn) -> None:
+        """Call fn(packet) for every packet on the private portnum."""
+        self._listeners.append(fn)
+
     def _on_receive(self, packet=None, interface=None):  # pubsub callback
         if not packet:
             return
         decoded = packet.get("decoded") or {}
-        if decoded.get("portnum") in (sq.PORTNUM, "PRIVATE_APP", str(sq.PORTNUM)):
-            self._rx.put((time.monotonic(), decoded.get("payload", b"")))
+        if decoded.get("portnum") not in (sq.PORTNUM, "PRIVATE_APP", str(sq.PORTNUM)):
+            return
+        self._rx.put((time.monotonic(), decoded.get("payload", b"")))
+        for fn in self._listeners:
+            try:
+                fn(packet)
+            except (
+                Exception
+            ) as exc:  # noqa: BLE001 — a bad listener must not stop the bus
+                print(f"listener error: {exc}", file=sys.stderr)
 
     def drain(self) -> None:
         while True:
@@ -103,11 +120,11 @@ class Device:
             except queue.Empty:
                 return
 
-    def send(self, payload: bytes) -> None:
-        """Inject a packet on the private portnum, addressed to ourselves."""
+    def send(self, payload: bytes, destination=None) -> None:
+        """Inject a packet on the private portnum; defaults to ourselves."""
         self.iface.sendData(
             payload,
-            destinationId=self.node_num,
+            destinationId=self.node_num if destination is None else destination,
             portNum=sq.PORTNUM,
             wantAck=False,
             wantResponse=False,
@@ -143,15 +160,71 @@ class Device:
         payload, _ = self.request(sq.CMD_CAPABILITY, sq.RPL_CAPABILITY)
         return sq.parse_capability(payload)
 
-    def get_config(self) -> tuple[sq.Config, bytes]:
-        payload, _ = self.request(sq.CMD_GET_CONFIG, sq.RPL_GET_CONFIG)
+    def get_config(self, timeout: float = 6.0) -> tuple[sq.Config, bytes]:
+        payload, _ = self.request(sq.CMD_GET_CONFIG, sq.RPL_GET_CONFIG, timeout)
         blob = payload[3:]
         return sq.parse_blob(blob), blob
 
-    def apply_config(self, blob: bytes, timeout: float = 8.0) -> int:
-        """Push a config blob. Returns the status byte from the SQ! acknowledgement."""
-        payload, _ = self.request(blob, sq.RPL_CONFIG_ACK, timeout)
-        return payload[3]
+    def apply_config(
+        self, blob: bytes, timeout: float | None = None, attempts: int = 3
+    ) -> int:
+        """Push a config blob. Returns the status byte from the SQ! acknowledgement.
+
+        A node polling a dead RS485 bus is blocked inside its poll loop and
+        cannot answer until the cycle ends, so a fixed timeout is the wrong
+        model: the wait has to be at least as long as the plan it is currently
+        running can take. `blocked_for()` derives that, and the request is
+        retried, because landing in a gap is partly luck.
+        """
+        if timeout is None:
+            timeout = max(8.0, self.worst_case_block_s() + 4.0)
+        last = None
+        for attempt in range(attempts):
+            try:
+                payload, _ = self.request(blob, sq.RPL_CONFIG_ACK, timeout)
+                return payload[3]
+            except DeviceError as exc:
+                last = exc
+                if attempt + 1 < attempts:
+                    time.sleep(2.0)
+        raise DeviceError(f"config not acknowledged after {attempts} attempts: {last}")
+
+    def worst_case_block_s(self) -> float:
+        """How long the node's CURRENT plan can hold it inside its poll loop.
+
+        Every poll costs (retries + 1) attempts, and on a silent bus each attempt
+        costs a full response timeout. Firmware before the staged read charges two
+        of those per attempt, so this assumes the worse of the two.
+        """
+        try:
+            cfg, _ = self.get_config(timeout=6.0)
+        except DeviceError:
+            return 30.0  # cannot ask — assume something slow rather than give up early
+        if not cfg.rs485_enabled or not cfg.polls:
+            return 0.0
+        per_attempt = 2 * cfg.response_timeout_ms / 1000.0
+        return (
+            len(cfg.polls) * (cfg.retries + 1) * per_attempt
+            + len(cfg.polls) * cfg.poll_gap_ms / 1000.0
+        )
+
+    def quiesce(self) -> sq.Config:
+        """Stop the node polling, so it can answer promptly.
+
+        Reconfiguring a node that is mid-cycle against an unresponsive bus is a
+        fight; taking RS485 out of the picture first turns every later exchange
+        into a fast one. Returns the config that was in place beforehand.
+        """
+        before, _ = self.get_config()
+        idle = sq.Config(
+            name=before.name,
+            polls=[],
+            rs485_enabled=False,
+            uplink_interval_s=3600,
+            deep_sleep=False,
+        )
+        self.apply_config(idle.to_blob())
+        return before
 
     def poll_now(self, timeout: float = 15.0) -> tuple[bytes, float]:
         """Trigger an immediate RS485 read; returns (raw-forward payload, latency)."""

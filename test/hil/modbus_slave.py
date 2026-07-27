@@ -30,6 +30,46 @@ def crc16(data: bytes) -> int:
     return crc
 
 
+def registers_to_bytes(
+    registers: dict[int, int], reg_start: int, reg_count: int
+) -> bytes:
+    """Return the data bytes a slave holding `registers` would serve for a read."""
+    out = bytearray()
+    for i in range(reg_count):
+        out += registers.get(reg_start + i, 0).to_bytes(2, "big")
+    return bytes(out)
+
+
+def build_reply(
+    frame: bytes,
+    registers: dict[int, int],
+    slave_id: int = 1,
+    exception_code: int | None = None,
+) -> bytes | None:
+    """Build the RTU reply a slave would send for `frame`, or None to stay silent.
+
+    Pure: no serial, no timing. The wired slave below and the mesh-side fake peer
+    both go through here, so "what a slave would answer" has one definition.
+    """
+    if len(frame) < 8:
+        return None
+    slave, function = frame[0], frame[1]
+    if slave != slave_id or function not in (3, 4):
+        return None
+
+    if exception_code is not None:
+        # [addr][func|0x80][code] — five bytes with the checksum, whatever was
+        # asked for. That length difference is what a master has to notice
+        # before it can report the refusal instead of timing out.
+        body = bytes([slave, function | 0x80, exception_code])
+    else:
+        reg_start = int.from_bytes(frame[2:4], "big")
+        reg_count = int.from_bytes(frame[4:6], "big")
+        data = registers_to_bytes(registers, reg_start, reg_count)
+        body = bytes([slave, function, len(data)]) + data
+    return body + crc16(body).to_bytes(2, "little")
+
+
 @dataclass
 class Request:
     slave: int
@@ -112,10 +152,7 @@ class ModbusSlave:
 
     def expected_data(self, reg_start: int, reg_count: int) -> bytes:
         """Return the data bytes this slave would serve — what the device must forward."""
-        out = bytearray()
-        for i in range(reg_count):
-            out += self.value(reg_start + i).to_bytes(2, "big")
-        return bytes(out)
+        return registers_to_bytes(self.registers, reg_start, reg_count)
 
     # ── the server loop ──────────────────────────────────────────────────────
 
@@ -158,15 +195,10 @@ class ModbusSlave:
         if not serve:
             return
 
-        if self.exception_code is not None:
-            # [addr][func|0x80][code] — five bytes with the checksum, whatever
-            # was asked for. That length difference is what the device has to
-            # notice before it can report the refusal instead of timing out.
-            body = bytes([slave, function | 0x80, self.exception_code])
-        else:
-            data = self.expected_data(reg_start, reg_count)
-            body = bytes([slave, function, len(data)]) + data
-        self._serial.write(body + crc16(body).to_bytes(2, "little"))
+        reply = build_reply(frame, self.registers, self.slave_id, self.exception_code)
+        if reply is None:
+            return
+        self._serial.write(reply)
         self._serial.flush()
         # A half-duplex converter reflects our own transmission; drop it so the
         # next request is not parsed out of our own echo.
