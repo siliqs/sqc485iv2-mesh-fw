@@ -25,7 +25,7 @@ class DeviceError(RuntimeError):
 
 
 class Device:
-    def __init__(self, port: str, connect_timeout: float = 30.0):
+    def __init__(self, port: str, connect_timeout: float = 20.0):
         self.port = port
         self.connect_timeout = connect_timeout
         self.iface = None
@@ -61,8 +61,11 @@ class Device:
                 time.sleep(0.3)
 
                 pub.subscribe(self._on_receive, "meshtastic.receive")
+                # The library waits 300 s for the handshake by default. On a bench
+                # that is indistinguishable from a hang — fail fast and retry
+                # instead, since a cold CDC-ACM port usually needs a second go.
                 self.iface = meshtastic.serial_interface.SerialInterface(
-                    devPath=self.port
+                    devPath=self.port, timeout=int(self.connect_timeout)
                 )
                 self.iface.waitForConfig()
                 self.node_num = self.iface.getMyNodeInfo()["num"]
