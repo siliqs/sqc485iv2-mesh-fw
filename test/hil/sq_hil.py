@@ -32,6 +32,9 @@ import time
 HERE = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
+import qc_checks  # noqa: E402
+import report as qc_report  # noqa: E402
+import requirements as req  # noqa: E402
 import sq_protocol as sq  # noqa: E402
 from modbus_slave import ModbusSlave, crc16  # noqa: E402
 from serial_echo import SerialEcho  # noqa: E402
@@ -64,16 +67,54 @@ CERTIFIED_LORA = {
 
 
 class Report:
+    """Assertion output, plus which requirement each assertion was answering.
+
+    The verdict a release gate owes you is per-requirement, not per-assertion: a
+    run that prints forty green ticks still tells you nothing about the feature
+    it never touched. Checks call `requirement(id)` before their assertions, and
+    everything until the next call is attributed there; anything in
+    requirements.py that nothing claimed comes out as NOT RUN.
+    """
+
     def __init__(self):
         self.failures = 0
         self.warnings = 0
         self.timings: dict[str, float] = {}
+        self.status: dict[str, str] = {r.id: req.NOT_RUN for r in req.REQUIREMENTS}
+        self.notes: dict[str, str] = {}
+        self._current: str | None = None
+
+    # ── requirement attribution ──────────────────────────────────────────────
+
+    def requirement(self, req_id: str):
+        if req_id not in self.status:
+            raise KeyError(f"{req_id} is not in requirements.py")
+        self._current = req_id
+        if self.status[req_id] == req.NOT_RUN:
+            self.status[req_id] = req.PASS  # until something fails against it
+
+    def skip(self, req_id: str, why: str):
+        if self.status.get(req_id) in (req.NOT_RUN, None):
+            self.status[req_id] = req.SKIP
+            self.notes[req_id] = why
+
+    def _mark(self, state):
+        if self._current and not (
+            state == req.PASS and self.status[self._current] == req.FAIL
+        ):
+            self.status[self._current] = state
+
+    # ── output ───────────────────────────────────────────────────────────────
 
     def ok(self, msg):
+        self._mark(req.PASS)
         print(f"  {GREEN}✓{OFF} {msg}")
 
     def bad(self, msg, detail=None):
         self.failures += 1
+        self._mark(req.FAIL)
+        if self._current:
+            self.notes[self._current] = msg
         print(f"  {RED}✗{OFF} {msg}")
         if detail:
             print(f"    {DIM}{detail}{OFF}")
@@ -92,7 +133,33 @@ class Report:
         return cond
 
     def section(self, title):
+        self._current = None
         print(f"\n{BOLD}{title}{OFF}")
+
+    # ── the checklist ────────────────────────────────────────────────────────
+
+    def checklist(self):
+        """Print every requirement, in order, with its verdict."""
+        mark = {
+            req.PASS: f"{GREEN}PASS{OFF}",
+            req.FAIL: f"{RED}FAIL{OFF}",
+            req.SKIP: f"{YELLOW}SKIP{OFF}",
+            req.NOT_RUN: f"{RED}NOT RUN{OFF}",
+        }
+        print(f"\n{BOLD}acceptance checklist{OFF}")
+        area = None
+        for requirement in req.REQUIREMENTS:
+            if requirement.area != area:
+                area = requirement.area
+                print(f"  {DIM}── {area} {'─' * (58 - len(area))}{OFF}")
+            state = self.status[requirement.id]
+            print(f"  {mark[state]:<16} {requirement.id:<8} {requirement.title}")
+            note = self.notes.get(requirement.id)
+            if note and state != req.PASS:
+                print(f"                   {DIM}{note}{OFF}")
+
+    def gaps(self):
+        return [r for r in req.REQUIREMENTS if self.status[r.id] == req.NOT_RUN]
 
 
 def find_port(patterns, label, flag):
@@ -134,6 +201,7 @@ def check_identity(dev: Device, rep: Report):
         f"proto {cap.proto}, features 0x{cap.features:02x} ({', '.join(cap.feature_list())})"
     )
 
+    rep.requirement("ID-01")
     rep.check(
         cap.product_id == "SQC485Iv2",
         f"product id is {cap.product_id}",
@@ -141,17 +209,20 @@ def check_identity(dev: Device, rep: Report):
         "the configurator labels nodes from this string",
     )
 
+    rep.requirement("ID-02")
     rep.check(
         cap.proto == 2,
         "capability proto 2",
         f"capability proto {cap.proto}, expected 2",
     )
+    rep.requirement("ID-03")
     rep.check(
         cap.features == 0x3F,
         f"all six features advertised (0x{cap.features:02x})",
         f"features 0x{cap.features:02x}, expected 0x3F",
     )
 
+    rep.requirement("ID-04")
     expected_fw = source_fw_version()
     if expected_fw:
         rep.check(
@@ -168,6 +239,7 @@ def check_radio(dev: Device, rep: Report, strict: bool):
     lora = dev.lora
     complain = rep.bad if strict else rep.warn
 
+    rep.requirement("RF-01")
     for field, want in CERTIFIED_LORA.items():
         got = getattr(lora, field, None)
         match = abs(got - want) < 1e-6 if isinstance(want, float) else got == want
@@ -180,6 +252,7 @@ def check_radio(dev: Device, rep: Report, strict: bool):
                 "to treat it as a failure (e.g. when verifying a factory image)",
             )
 
+    rep.requirement("RF-02")
     if dev.bluetooth.enabled:
         rep.warn(
             "bluetooth is enabled",
@@ -221,6 +294,7 @@ def check_config_roundtrip(dev: Device, rep: Report, saved_blob: bytes):
     ):
         return
 
+    rep.requirement("CFG-01")
     read_back, _ = dev.get_config()
     fields = [
         ("name", probe.name, read_back.name),
@@ -249,6 +323,7 @@ def check_config_roundtrip(dev: Device, rep: Report, saved_blob: bytes):
         "; ".join(f"{n}: wrote {w!r}, read {g!r}" for n, w, g in mismatched),
     )
 
+    rep.requirement("CFG-02")
     for i, (wrote, got) in enumerate(zip(probe.polls, read_back.polls, strict=False)):
         rep.check(
             wrote.as_tuple() == got.as_tuple(),
@@ -267,6 +342,7 @@ def check_config_roundtrip(dev: Device, rep: Report, saved_blob: bytes):
         uplink_interval_s=3600,
         deep_sleep=False,
     )
+    rep.requirement("CFG-03")
     rep.info(
         f"oversized plan: {len(oversized.polls)} polls need "
         f"{oversized.expected_payload_len} bytes, a packet carries {sq.MESH_PAYLOAD_LEN}"
@@ -368,6 +444,7 @@ def check_rs485_echo(
         range(0x41, 0x49)
     )  # "ABCDEFGH" — printable, easy to spot on a scope
 
+    rep.requirement("BUS-01")
     with SerialEcho(port=rs485_port, baud=baud) as echo:
         time.sleep(0.3)
         echo.clear()
@@ -390,6 +467,7 @@ def check_rs485_echo(
         )
         return False
 
+    rep.requirement("BUS-02")
     if returned == pattern:
         rep.ok(f"the device read the echo back ({returned.hex()})")
     elif returned:
@@ -453,6 +531,7 @@ def check_rs485(dev: Device, rep: Report, rs485_port: str):
             rep.info("skipping the poll checks — fix the bus first")
             return
 
+        rep.requirement("BUS-03")
         if not rep.check(
             answer.startswith(expect),
             f"raw bridge reached the slave ({answer.hex()})",
@@ -467,6 +546,7 @@ def check_rs485(dev: Device, rep: Report, rs485_port: str):
         payload, latency = dev.poll_now()
         rep.timings["poll-now round trip"] = latency
 
+        rep.requirement("POLL-01")
         expected = (
             bytes([0x01, 0x03])
             + slave.expected_data(0, 2)
@@ -479,12 +559,14 @@ def check_rs485(dev: Device, rep: Report, rs485_port: str):
             f"payload {payload.hex()} != expected {expected.hex()}",
         )
 
+        rep.requirement("POLL-02")
         rep.check(
             len(payload) == plan.expected_payload_len,
             f"payload length matches the plan ({len(payload)} bytes)",
             f"payload is {len(payload)} bytes, the plan predicts {plan.expected_payload_len}",
         )
 
+        rep.requirement("POLL-03")
         served = [r for r in slave.requests if r.answered]
         rep.check(
             len(served) == len(plan.polls),
@@ -509,6 +591,7 @@ def check_rs485(dev: Device, rep: Report, rs485_port: str):
         payload, latency = dev.poll_now(timeout=20.0)
         rep.timings["poll-now against a refusing slave"] = latency
 
+        rep.requirement("POLL-07")
         decoded = sq.split_raw_payload(payload, plan.polls)
         rep.check(
             all(r.error == "exception" for r in decoded),
@@ -518,11 +601,13 @@ def check_rs485(dev: Device, rep: Report, rs485_port: str):
         )
         # And the payload has to say WHICH refusal, or the technician still cannot
         # tell "fix the poll plan" from "check the device".
+        rep.requirement("POLL-08")
         rep.check(
             all(r.exception_code == 0x02 for r in decoded),
             f"the slave's own reason survives to the payload ({decoded[0].describe()})",
             f"exception codes were {[r.exception_code for r in decoded]}, expected 0x02",
         )
+        rep.requirement("POLL-09")
         rep.check(
             len(slave.requests) == len(plan.polls),
             f"each poll asked exactly once ({len(slave.requests)} requests)",
@@ -544,6 +629,7 @@ def check_rs485(dev: Device, rep: Report, rs485_port: str):
         payload, latency = dev.poll_now(timeout=30.0)
         rep.timings["poll-now with dead bus"] = latency
 
+        rep.requirement("POLL-06")
         rep.check(
             len(payload) == plan.expected_payload_len,
             f"dead bus still produced a full-length payload ({len(payload)} bytes)",
@@ -562,12 +648,70 @@ def check_rs485(dev: Device, rep: Report, rs485_port: str):
 # ── entry point ──────────────────────────────────────────────────────────────
 
 
+def _dut_identity(dev: Device) -> dict:
+    """What the report needs to say which board and which build this was."""
+    out = {
+        "node": f"!{dev.node_num:08x}",
+        "firmware": dev.firmware_version,
+        "pio_env": getattr(dev.iface.myInfo, "pio_env", ""),
+        "reboot_count": getattr(dev.iface.myInfo, "reboot_count", ""),
+    }
+    try:
+        cap = dev.capability()
+        out.update(
+            product_id=cap.product_id,
+            sq_fw=cap.firmware,
+            blob_version=f"v{cap.max_blob_version}",
+            features=f"0x{cap.features:02x} ({', '.join(cap.feature_list())})",
+        )
+    except DeviceError:
+        pass
+    return out
+
+
+def _run(rep: Report, fn, *args, **kwargs):
+    """Run one section; a crash inside it fails that section, not the run.
+
+    A checklist stops being a checklist the moment one unhandled exception can
+    end it early — everything below the crash silently becomes NOT RUN, which
+    reads like nobody wrote those checks rather than like they were skipped.
+    """
+    try:
+        return fn(*args, **kwargs)
+    except Exception as exc:  # noqa: BLE001 — this is the isolation boundary
+        rep.bad(
+            f"{fn.__name__} did not complete: {type(exc).__name__}: {exc}",
+            "the rest of the checklist still ran; this section's requirements are "
+            "reported on whatever it managed to assert before the failure",
+        )
+        return None
+
+
+def _skip_area(rep: Report, needs: str, why: str):
+    """Mark every requirement gated on `needs` as skipped, with the reason.
+
+    A skip has to be recorded, not silently omitted: SKIP means "this bench
+    cannot answer it", NOT RUN means "nobody wrote a check". Collapsing the two
+    is exactly how a gap stops being visible.
+    """
+    for requirement in req.REQUIREMENTS:
+        if requirement.needs == needs:
+            rep.skip(requirement.id, why)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
     ap.add_argument("--device", help="SQC485Iv2 USB console (default: autodetect)")
     ap.add_argument("--rs485", help="USB-RS485 dongle (default: autodetect)")
+    ap.add_argument(
+        "--peer",
+        metavar="PORT",
+        help="a second Meshtastic node, used as the far end of the RS485 tunnel "
+        "(FEAT-02). Without it that requirement is skipped: the tunnel forward is "
+        "sent with ccToPhone=false and is therefore invisible from the master",
+    )
     ap.add_argument(
         "--skip-rs485", action="store_true", help="console-side checks only"
     )
@@ -578,6 +722,43 @@ def main() -> int:
     )
     ap.add_argument(
         "--json", metavar="PATH", help="also write the timings to a JSON file"
+    )
+    ap.add_argument(
+        "--skip-reboot",
+        action="store_true",
+        help="skip the checks that reset the board (persistence, boot reliability)",
+    )
+    ap.add_argument(
+        "--deep-sleep",
+        action="store_true",
+        help="also verify the duty-cycle deep sleep (FEAT-03). Puts the node on "
+        "CLIENT_MUTE for the duration and restores the role afterwards; slow, and "
+        "the board only offers short windows while it is running",
+    )
+    ap.add_argument(
+        "--boot-rounds",
+        type=int,
+        default=3,
+        metavar="N",
+        help="resets for the boot-reliability check (default 3)",
+    )
+    ap.add_argument(
+        "--report-dir",
+        metavar="DIR",
+        default=str(HERE / "reports"),
+        help="where to record this run (default: test/hil/reports). One dated "
+        "Markdown file per run, plus a PDF rendering of it",
+    )
+    ap.add_argument(
+        "--no-report",
+        action="store_true",
+        help="do not record this run to a file",
+    )
+    ap.add_argument(
+        "--allow-gaps",
+        action="store_true",
+        help="do not fail the run just because some requirements were never "
+        "exercised (use when deliberately running a subset)",
     )
     args = ap.parse_args()
 
@@ -604,22 +785,66 @@ def main() -> int:
 
     rep = Report()
     started = time.monotonic()
+    started_at, started_human = qc_report.now()
+    meta = {
+        "started": started_at,
+        "started_human": started_human,
+        "device_port": device_port,
+        "rs485_port": rs485_port,
+        "peer_port": args.peer,
+        "command": " ".join(pathlib.Path(a).name if a == sys.argv[0] else a
+                            for a in sys.argv),
+        "git": qc_report.git_context(REPO),
+        "dut": {},
+    }
 
     with Device(device_port) as dev:
         saved_cfg, saved_blob = dev.get_config()
+        # Capture identity now: the report has to survive whatever the run does
+        # to the board afterwards, and `dev` is closed by the time it is written.
+        meta["dut"] = _dut_identity(dev)
         print(
             f"  {DIM}saved device config: {saved_cfg.name!r}, {len(saved_cfg.polls)} poll(s), "
             f"{len(saved_blob)} byte blob{OFF}"
         )
 
         try:
-            check_identity(dev, rep)
-            check_radio(dev, rep, args.strict_radio)
-            check_config_roundtrip(dev, rep, saved_blob)
-            if rs485_port and check_rs485_echo(dev, rep, rs485_port):
-                check_rs485(dev, rep, rs485_port)
+            _run(rep, check_identity, dev, rep)
+            _run(rep, check_radio, dev, rep, args.strict_radio)
+            _run(rep, check_config_roundtrip, dev, rep, saved_blob)
+            _run(rep, qc_checks.check_blob_robustness, dev, rep)
+            _run(rep, qc_checks.check_uplink_routing, dev, rep)
+            _run(rep, qc_checks.check_ble_power, dev, rep)
+
+            if rs485_port and _run(rep, check_rs485_echo, dev, rep, rs485_port):
+                _run(rep, check_rs485, dev, rep, rs485_port)
+                _run(rep, qc_checks.check_link_params, dev, rep, rs485_port)
+                _run(rep, qc_checks.check_fc4_and_gap, dev, rep, rs485_port)
+                _run(rep, qc_checks.check_corrupt_reply, dev, rep, rs485_port)
+                _run(rep, qc_checks.check_interval_change, dev, rep, rs485_port)
+                _run(rep, qc_checks.check_idle_mode, dev, rep, rs485_port)
+                _run(rep, qc_checks.check_tunnel, dev, rep, rs485_port, args.peer)
             elif rs485_port:
                 rep.info("skipping the Modbus checks — the bus itself is not working")
+                _skip_area(rep, "rs485", "the bus is not working")
+            else:
+                _skip_area(rep, "rs485", "--skip-rs485")
+
+            # Reboot-bounded checks go last: everything above is cheaper, and a
+            # board that cannot come back should not invalidate results already
+            # in hand.
+            if args.skip_reboot:
+                _skip_area(rep, "reboot", "--skip-reboot")
+            else:
+                _run(rep, qc_checks.check_persistence, dev, rep)
+                _run(rep, qc_checks.check_boot_reliability, dev, rep, args.boot_rounds)
+
+            if args.deep_sleep:
+                _run(rep, qc_checks.check_deep_sleep, dev, rep)
+            else:
+                _skip_area(rep, "role", "not requested (--deep-sleep)")
+            if not args.peer:
+                _skip_area(rep, "peer", "no second node given (--peer)")
         finally:
             rep.section("cleanup")
             # A release gate must never be able to strand the board it is
@@ -649,6 +874,20 @@ def main() -> int:
         for name, seconds in rep.timings.items():
             print(f"  {name}: {seconds*1000:.0f} ms")
 
+    rep.checklist()
+
+    meta["elapsed_s"] = elapsed
+    if not args.no_report:
+        try:
+            made = qc_report.write(rep, meta, pathlib.Path(args.report_dir))
+            print(f"\n{DIM}report  {made['markdown']}{OFF}")
+            if made["pdf"]:
+                print(f"{DIM}pdf     {made['pdf']}{OFF}")
+            else:
+                print(f"{YELLOW}!{OFF} no PDF: {made['pdf_error']}")
+        except Exception as exc:  # noqa: BLE001 — recording must not fail the gate
+            print(f"{YELLOW}!{OFF} could not write the run report: {exc}")
+
     if args.json:
         pathlib.Path(args.json).write_text(
             json.dumps(
@@ -658,19 +897,45 @@ def main() -> int:
                     },
                     "failures": rep.failures,
                     "warnings": rep.warnings,
+                    "requirements": rep.status,
+                    "notes": rep.notes,
                 },
                 indent=2,
             )
             + "\n"
         )
 
-    print()
+    tally = {
+        state: sum(1 for v in rep.status.values() if v == state)
+        for state in (req.PASS, req.FAIL, req.SKIP, req.NOT_RUN)
+    }
+    gaps = rep.gaps()
+
+    print(
+        f"\n  {tally[req.PASS]} passed, {tally[req.FAIL]} failed, "
+        f"{tally[req.SKIP]} skipped, {tally[req.NOT_RUN]} not run "
+        f"({len(req.REQUIREMENTS)} requirements, {elapsed:.0f}s)"
+    )
+
+    if gaps and not args.allow_gaps:
+        # An unexercised requirement is a worse result than a failing one: a
+        # failure tells you what is broken, a gap tells you nothing at all while
+        # still printing a green run.
+        print(
+            f"\n{RED}FAILED{OFF}  {len(gaps)} requirement(s) were never exercised — "
+            "a release gate that skips a feature is not a gate"
+        )
+        for requirement in gaps:
+            print(f"    {DIM}{requirement.id} {requirement.title}{OFF}")
+        print(f"  {DIM}re-run with --allow-gaps to accept this deliberately{OFF}\n")
+        return 1
+
     if rep.failures:
         print(
-            f"{RED}FAILED{OFF}  {rep.failures} check(s), {rep.warnings} warning(s), {elapsed:.1f}s\n"
+            f"\n{RED}FAILED{OFF}  {rep.failures} check(s), {rep.warnings} warning(s), {elapsed:.1f}s\n"
         )
         return 1
-    print(f"{GREEN}PASSED{OFF}  {rep.warnings} warning(s), {elapsed:.1f}s\n")
+    print(f"\n{GREEN}PASSED{OFF}  {rep.warnings} warning(s), {elapsed:.1f}s\n")
     return 0
 
 

@@ -97,6 +97,10 @@ class ModbusSlave:
     # 0x02 (illegal data address) is what a real slave says when the poll plan
     # names a register it does not have.
     exception_code: int | None = None
+    # Answer with a broken checksum. A noisy bus produces exactly this, and the
+    # master must reject it rather than forward the bytes as a reading — nothing
+    # downstream can tell a corrupted value from a real one.
+    corrupt_crc: bool = False
 
     _serial: serial.Serial | None = None
     _thread: threading.Thread | None = None
@@ -198,6 +202,8 @@ class ModbusSlave:
         reply = build_reply(frame, self.registers, self.slave_id, self.exception_code)
         if reply is None:
             return
+        if self.corrupt_crc:
+            reply = reply[:-1] + bytes([reply[-1] ^ 0xFF])
         self._serial.write(reply)
         self._serial.flush()
         # A half-duplex converter reflects our own transmission; drop it so the

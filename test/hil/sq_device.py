@@ -9,6 +9,7 @@ and answers straight back to the attached client without touching the radio
 
 from __future__ import annotations
 
+import os
 import queue
 import sys
 import time
@@ -94,6 +95,53 @@ class Device:
 
     def close(self) -> None:
         self._teardown()
+
+    def reboot(self, timeout: float = 120.0) -> float:
+        """Reset the node and reconnect. Returns seconds until it answered again.
+
+        Used by the checks that can only be made across a boot boundary — that
+        the config really reached flash, and that this board (no bulk decoupling
+        on 3.3V) comes back at all.
+
+        The proof that a reset happened is `reboot_count`, NOT the /dev node.
+        The obvious signal — waiting for the USB CDC to disappear and return —
+        does not work here: the C3's USB-JTAG bridge re-enumerates so fast that
+        the port node is never observably absent, even polling every 30 ms. A
+        run built on that signal spends its whole timeout waiting for a
+        disappearance that never comes, and then reports success for a board it
+        never actually reset. myInfo.reboot_count is incremented by the firmware
+        on every boot, so a value that has moved is positive evidence.
+        """
+        started = time.monotonic()
+        before = getattr(self.iface.myInfo, "reboot_count", None)
+        try:
+            self.iface.localNode.reboot(secs=1)
+        except Exception as exc:  # noqa: BLE001 — the reply may be cut off by the reset
+            last = exc
+        else:
+            last = None
+        self._teardown()
+        time.sleep(2.0)  # let it actually go down before we start knocking
+
+        deadline = started + timeout
+        while time.monotonic() < deadline:
+            try:
+                self.connect(attempts=1)
+            except DeviceError:
+                time.sleep(0.5)
+                continue
+            after = getattr(self.iface.myInfo, "reboot_count", None)
+            if before is None or after is None or after != before:
+                return time.monotonic() - started
+            # Answered, but on the same boot — the reset has not landed yet.
+            self._teardown()
+            time.sleep(0.5)
+
+        raise DeviceError(
+            f"the node did not reboot within {timeout:.0f}s "
+            f"(reboot_count stayed at {before})"
+            + (f"; reboot request errored: {last}" if last else "")
+        )
 
     # ── packet plumbing ──────────────────────────────────────────────────────
 
@@ -218,7 +266,19 @@ class Device:
         fight; taking RS485 out of the picture first turns every later exchange
         into a fast one. Returns the config that was in place beforehand.
         """
-        before, _ = self.get_config()
+        # A node part-way through a plan against a dead bus can be blocked for
+        # most of a cycle, so the first ask is expected to miss sometimes. Grow
+        # the window instead of failing: this runs before nearly every check, and
+        # a spurious raise here would abort a section that has not started yet.
+        before = None
+        for timeout in (6.0, 12.0, 25.0):
+            try:
+                before, _ = self.get_config(timeout=timeout)
+                break
+            except DeviceError as exc:
+                last = exc
+        if before is None:
+            raise DeviceError(f"node would not answer SQG? while quiescing: {last}")
         idle = sq.Config(
             name=before.name,
             polls=[],
