@@ -463,6 +463,23 @@ void ModbusModule::applyConfigBlob(const uint8_t *blob, size_t len, uint32_t fro
         g_cfg = incoming;
         // Re-init the UART so a changed baud/parity takes effect without a reboot.
         hal_serial_init(g_cfg.modbus.baud, g_cfg.modbus.parity, g_cfg.modbus.stop_bits);
+        // Restart the thread's timer. Without this it is still sleeping out
+        // whatever runOnce() last returned — the OLD interval — so shortening the
+        // cadence does not take effect until the old one expires. Moving a unit
+        // from hourly to minutely reporting would leave it silent for up to an
+        // hour, which in the field reads as a dead node rather than a config that
+        // has not landed. (Lengthening never showed it, so it survived every test
+        // that only pushed a longer interval.)
+        //
+        // Periodic polling is the only mode where the next wake-up is known here:
+        // one new interval from now. In tunnel mode runOnce() returns tunnelPump()'s
+        // own pacing, and with RS485 off it returns a short idle re-check — pinning
+        // either to uplink_interval_s would be wrong, and for the tunnel it is
+        // fatal: a 3600 s config would park the master for an hour and it would
+        // never pump its local bus again. So wake immediately and let runOnce()
+        // work out the right delay for those.
+        const bool periodic = g_cfg.rs485_enabled && !g_cfg.tunnel.enabled;
+        setIntervalFromNow(periodic ? (uint32_t)g_cfg.power.uplink_interval_s * 1000 : 0);
         LOG_INFO("ModbusModule: config updated over mesh from 0x%08x — %u poll(s), %u byte payload, baud %u", (unsigned)from,
                  g_cfg.poll_count, (unsigned)plan_len, (unsigned)g_cfg.modbus.baud);
         status = SQ_CFG_OK;
