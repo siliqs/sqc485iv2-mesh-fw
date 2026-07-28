@@ -182,6 +182,10 @@ def find_port(patterns, label, flag):
     return hits[0]
 
 
+sys.path.insert(0, str(REPO / "test" / "e2e"))
+from sqc485iv2_e2e import firmware_provenance  # noqa: E402
+
+
 def source_fw_version() -> str | None:
     header = REPO / "src" / "siliqs" / "firmware_core" / "include" / "config.h"
     match = re.search(r'#define\s+SQ_FW_VERSION\s+"([^"]+)"', header.read_text())
@@ -231,6 +235,18 @@ def check_identity(dev: Device, rep: Report):
             f"reports fw {cap.firmware}, source says {expected_fw}",
             "the board is running a different build than this checkout",
         )
+
+    # SQ_FW_VERSION alone does not identify a build. It was "1.3.3" on both main
+    # and this branch across a 613-line firmware difference, so the string agreed
+    # while the images did not -- exactly the case a release gate exists to catch.
+    # The git hash in firmware_version does identify it, and comparing the tree
+    # objects of the firmware paths (rather than the commit) keeps a docs-only
+    # commit from failing the gate for no reason.
+    ok, why = firmware_provenance(REPO, dev.firmware_version)
+    if ok is None:
+        rep.info(f"provenance not checked: {why}")
+    else:
+        rep.check(ok, why, why, "SQ_FW_VERSION agreeing is not enough on its own")
     return cap
 
 

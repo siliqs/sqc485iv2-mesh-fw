@@ -8,6 +8,11 @@
 產品本身的知識(產品線、PortNum 256、SQ 協定、TW DTS 參數、brownout 緩解、出廠 PSK)
 寫在 **repo 根目錄的 `CLAUDE.md`**,那份是主文件,**先讀它**。這份只寫測試台的事。
 
+語言規則沿用根目錄 `CLAUDE.md` §0:**文件用繁體中文,產出物一律英文**(測試腳本註解、
+assertion 訊息、commit message、識別字),文件裡的路徑、符號、指令、裝置回報字串
+(`SQ_FW_VERSION`、`firmware_version`、`POLL-07`)一律保留原文不翻譯。
+回覆使用者用繁體中文。
+
 ---
 
 ## 0. 🚨 跑 QC 前先確認**板上燒的就是你要發的那一版**
