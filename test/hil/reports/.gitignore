@@ -1,0 +1,3 @@
+# The PDFs are a rendering of the .md beside them — regenerable, and binary
+# blobs age badly in git. The Markdown record is the artefact worth keeping.
+*.pdf

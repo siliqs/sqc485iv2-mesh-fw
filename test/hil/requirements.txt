@@ -12,3 +12,8 @@ pyserial>=3.5           # the RS485 dongle, and the raw bus diagnostics
 
 # host tests for the HIL helpers (fake peer, protocol codecs)
 pytest>=8
+
+# rendering each run's report to PDF (test/hil/report.py). Owned here rather
+# than relied on from a /tmp venv, so a recorded QC run does not depend on
+# something outside the repo having survived a reboot.
+fpdf2>=2.8
