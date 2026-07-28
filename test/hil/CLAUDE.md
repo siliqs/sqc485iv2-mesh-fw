@@ -1,44 +1,42 @@
-# CLAUDE.md — sqc485iv2-mesh-fw-hil(QC 驗收 worktree)
+# CLAUDE.md — QC 驗收測試台(`test/hil/`)
 
-這**不是另一個 repo**。它是 `/Users/delorescelteh/Projects/sqc485iv2-mesh-fw` 的 git worktree,
-checkout 在分支 **`test/sq-regression-harness`**。用途只有一個:
+這份文件涵蓋 `test/hil/` 與 `test/sq_core/`。用途只有一個:
 
 > **發版前的 QC 閘門** —— 對一顆真板子把 SQC485Iv2 的**全部功能**逐條跑過,
 > 而不是只驗這次改了什麼。
 
 產品本身的知識(產品線、PortNum 256、SQ 協定、TW DTS 參數、brownout 緩解、出廠 PSK)
-寫在 **`../sqc485iv2-mesh-fw/CLAUDE.md`**,那份是主文件,**先讀它**。這份只寫測試台的事。
+寫在 **repo 根目錄的 `CLAUDE.md`**,那份是主文件,**先讀它**。這份只寫測試台的事。
 
 ---
 
-## 0. 🚨 這個分支**同時帶著韌體修改**,不是只有測試
+## 0. 🚨 跑 QC 前先確認**板上燒的就是你要發的那一版**
 
-這是最容易做出錯誤結論的地方。`test/sq-regression-harness` 除了測試,還含有 main 沒有的
-**firmware** commit:
+`ID-04` 會比對節點回報的 `SQ_FW_VERSION` 與這份 checkout,但它比的是**版本字串** ——
+**擋不住「同版本、不同分支」**。實例:main 與 `test/sq-regression-harness` 兩邊的
+`SQ_FW_VERSION` 都是 `1.3.3`,但韌體差了 613 行。
 
-| commit | 內容 | main 上有嗎 |
-|---|---|---|
-| `497257790` | `fix(modbus)`: 只重試 slave 說值得重試的拒絕 | ❌ |
-| `65d08a8d0` | `feat(modbus)`: 把 slave 的拒絕原因帶進 payload | ❌ |
-| `68beecc98` | `test(hil)`: 軟體遠端 + 不會把板子丟在半路的閘門 | ❌ |
-| `d8acb6741` | `fix(hil)`: serial handshake 快速失敗,不要等 300s | ❌ |
+真正可靠的辨識是裝置回報的 `firmware_version`,它帶著 git short hash:
 
-**所以「板上跑什麼韌體」決定了結果。** 如果板子燒的是 main 的 build,
-`POLL-07/08/09`(exception 路徑)一定 FAIL —— 那不是回歸,是那顆 image 還沒有這個修正:
-
-```c
-/* main 的 modbus.c:一次要求 5 + 2*reg_count bytes。
-   Modbus exception 回覆固定只有 5 bytes → 永遠湊不滿 → 被判成 timeout,
-   而且整個 retry 預算全燒掉。分支版本改成 staged read + modbus_exception_is_transient()。*/
+```
+2.7.26.0e03c75   ← main 的 build
+2.7.26.b2ffc23   ← harness 分支的 build
 ```
 
-跑 QC 之前**先確認板上的 firmware 就是你要發的那一版**。清單裡的 `ID-04` 就是在做這件事
-(比對 `SQ_FW_VERSION` 與 checkout),但它比對的是**版本字串**,擋不住「同版本、不同分支」。
-要驗分支韌體就先燒:
+要驗某一版就先燒它(app 分區更新**不會**動到 LittleFS 裡的設定,實測確認):
 
 ```bash
 pio run -e sqc485iv2-esp32c3-sx1262 -t upload --upload-port /dev/cu.usbmodem141201
 ```
+
+### 這件事咬過我們一次,值得記著
+
+2026-07-28 的第一份 QC 報告有 5 個 fail,其中 4 個被歸因為「板上是 main 的 build,
+修正在分支上」—— **那是讀原始碼推斷的,不是量到的**。隔天實際燒上分支韌體重跑:
+`POLL-07/08/09` 如預期通過,但 `CFG-03` **也**通過了,而它先前被當成「未修的真缺陷」。
+
+推斷錯了一項,而且是往「比實際更糟」的方向錯。**報告裡要嚴格區分「實測」與「推論」,
+而且推論要盡快用硬體收斂掉。**
 
 ---
 
@@ -57,7 +55,7 @@ pio run -e sqc485iv2-esp32c3-sx1262 -t upload --upload-port /dev/cu.usbmodem1412
 | **DUT** console | `/dev/cu.usbmodem141201` | SER `58:8C:81:B8:A0:3C`,node `!81b8a03c`,env `sqc485iv2-esp32c3-sx1262`(v233 極性) |
 | **RS485 dongle** | `/dev/cu.wchusbserial14140` | `1a86:7523` **已接到 DUT 的 A/B/GND,實測可用** ✅ |
 | **peer**(`--peer`) | `/dev/cu.usbmodem141301` | SER `50:78:7D:51:BD:B0`,node `!7d51bdb0`,env **`sqc485iv2-v231-esp32c3-sx1262`**(hw v2.3.1),fw `2.7.26.5dc5fdd` / SQ 1.3.2 |
-| 鄰居(**不要碰**) | `/dev/cu.usbmodem141101` | SER `58:8C:81:B9:48:00` = SQS-TH-I `!81b94800`。**會深度睡眠**,見 `../sqs-sensor-mesh-fw/CLAUDE.md` §3 |
+| 鄰居(**不要碰**) | `/dev/cu.usbmodem141101` | SER `58:8C:81:B9:48:00` = SQS-TH-I `!81b94800`。**會深度睡眠**,見 `/Users/delorescelteh/Projects/sqs-sensor-mesh-fw/CLAUDE.md` §3 |
 | 其他 CH340 | `12420` / `12430` | **沒接到任何東西**,拿它們當 `--rs485` 會得到「dongle 聽不到裝置發話」 |
 
 ⚠️ **第二顆節點是 `usbmodem141301`,不是 `wchusbserial12430`。** 兩顆 SQC485Iv2 都是
@@ -88,7 +86,7 @@ test/hil/.venv/bin/pip install -r test/hil/requirements.txt
 |---|---|---|---|
 | host unit | `make -C test/sq_core test` | 無 | ✅ 85 tests / 684 assertions,~1s |
 | **QC 驗收** | `test/hil/.venv/bin/python test/hil/sq_hil.py --device … --rs485 …` | 板子 + dongle | **35 條需求,~130s** |
-| 唯讀 smoke | `../sqc485iv2-mesh-fw/test/e2e/sqc485iv2_e2e.py` | 只要板子 | 不寫設定,可對現場節點跑 |
+| 唯讀 smoke | `test/e2e/sqc485iv2_e2e.py`(repo 根起算) | 只要板子 | 不寫設定,可對現場節點跑 |
 
 - `test/sq_core` —— 把 `firmware_core` 的 C 檔編成 host binary 測,含 committed 的
   golden blob fixture(CI 會檢查 `make_golden.py` 產出跟 checked-in hex 一致)。
@@ -241,7 +239,7 @@ service->sendToMesh(p, RX_SRC_LOCAL, false);   // forwardTunnel():ccToPhone = fa
 
 ---
 
-## 5. 2026-07-28 的基準線(板上跑 main 的 `2.7.26.0e03c75`)
+## 5. 基準線(2026-07-29,板上跑 `2.7.26.b2ffc23`)
 
 完整跑法 —— **35 條全部真的執行,沒有 SKIP**:
 
@@ -252,23 +250,19 @@ $V test/hil/sq_hil.py --device /dev/cu.usbmodem141201 \
 ```
 
 ```
-30 passed, 5 failed, 0 skipped, 0 not run  (35 requirements, 230s)
+34 passed, 1 failed, 0 skipped, 0 not run  (35 requirements, 211s)
 ```
 
-| 需求 | 結論 |
-|---|---|
-| `CFG-03` 過長 poll plan 被拒絕 | ❌ **真缺陷**。8 polls × 16 regs = 272 bytes > 233,`applyConfigBlob()` 回 status 0,`poll_collect_raw()` 在 poll 邊界靜默丟掉後面的 poll。清單期待 **status 3**(`sq_protocol.CONFIG_STATUS` 已經預留),韌體還沒實作 |
-| `CFG-07` 縮短 interval 立即生效 | ❌ **真缺陷**,實測改成 4s 後隔了 **21.9s** 才輪詢。見 §4.3 |
-| `POLL-07/08/09` exception 路徑 | ❌ **板上是 main 的 build,沒有那兩個 commit**(§0)。燒分支韌體後應該會過 —— **尚未實際驗證** |
-| 其餘 30 條 | ✅ 含 RS485 byte-exact 轉發、fc4、poll_gap、CRC 拒絕、19200 熱切換、unicast + want_ack、blob 拒絕/回溯相容、重開後設定保留、3 次重開全回來、tunnel 端到端、deep sleep 真的睡著並醒來 |
+**唯一還沒修的是 `CFG-07`** —— 縮短回報間隔不會立即生效。`applyConfigBlob()` 只做
+`config_save` + `hal_serial_init`,**沒有重排 OSThread 的排程**,所以節點會先把「舊的」
+間隔睡完。實測 25s → 4s 隔了 **21.9 秒**。把現場單位從每小時改成每分鐘回報,
+它會有長達一小時看起來像故障。修法見 §4.3。
 
-跑完之後 DUT 的 role 回到 `CLIENT`、config blob CRC 仍是 `0x485d`(與整場開始前一致)。
+其餘 34 條全過,包含:RS485 byte-exact 轉發、fc4、`poll_gap`、CRC 拒絕、19200 熱切換、
+unicast + `want_ack`、blob 拒絕與 v2/v3 回溯相容、過長 plan 以 `SQ_CFG_PLAN_TOO_LARGE`
+拒絕、重開後設定保留、3 次重開全回來、tunnel 端到端、deep sleep 真的睡著並醒來。
 
-⚠️ **`POLL-07/08/09` 的「燒分支韌體就會過」目前是從原始碼推斷的,不是實測。**
-main 的 `modbus.c` 一次要求 `5 + 2*reg_count` bytes,而 exception 回覆固定 5 bytes;
-分支的 `modbus.c` 有 `modbus_exception_is_transient()` 與 staged read。要確認就燒了再跑一次。
-
----
+前一版基準線(main 的 `2.7.26.0e03c75`)是 30/5;差異全部來自 §0 講的那批韌體 commit。
 
 ## 6. 這個 harness 不會做的事
 
