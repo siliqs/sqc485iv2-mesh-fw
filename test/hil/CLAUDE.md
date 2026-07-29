@@ -242,6 +242,42 @@ service->sendToMesh(p, RX_SRC_LOCAL, false);   // forwardTunnel():ccToPhone = fa
 之後每一次 poll 也全部 timeout。症狀跟接錯線一模一樣。
 一律用 `sq_protocol.bridge_request()` 組請求。
 
+### 4.6 🚨 重燒過的節點會讓 `FEAT-02` 失敗,而失敗訊息會指錯方向
+
+**`erase_flash` / factory reset 會讓節點重新產生一組 PKI 金鑰對。**
+但**對方節點的 NodeDB 裡還快取著舊公鑰**,於是:
+
+- 送方用 `(自己私鑰, 對方公鑰)` 算 ECDH → 一個 shared key
+- 收方用 `(自己私鑰, **舊的**送方公鑰)` 算 → **不同**的 shared key
+- 收方 `PKC decrypt attempted but failed!`,封包靜默丟棄
+
+tunnel 是 unicast DM,所以只有 `FEAT-02` 會倒;其餘 35 條(console / RS485 / 廣播)
+全過 —— 看起來就像 tunnel 這個功能壞了。
+
+2026-07-29 實測踩過完整一輪。兩個相關但**不同**的失敗,不要混:
+
+| 狀況 | master 的 log | peer 的 log |
+|---|---|---|
+| 完全不知道對方公鑰 | `Unknown public key ... refusing to send legacy DM` + `Error=39` | (沒收到) |
+| 有公鑰但是**過期的** | `Use PKI!` + `tunnel fwd N bytes` (送出去了) | `PKC decrypt attempted but failed!` |
+
+第二種特別惡毒:master 這邊**每一行 log 都正常**,`ModbusModule: tunnel fwd` 有印,
+封包也真的發射了。從 master 完全看不出問題。
+
+**怎麼修測試台狀態:**
+
+```python
+peer.localNode.removeNode("!<重燒過的節點 id>")   # 清掉過期快取
+# 然後重開那顆重燒過的節點 —— 開機會廣播一次完整 NodeInfo(帶新公鑰)
+```
+
+實測:清除前 peer 快取 `Ywz1AowV…`,DUT 實際是 `kuMuGdTJ…`;清除+重開後 peer 學到
+`kuMuGdTJ…`,`FEAT-02` 立刻通過。
+
+**這不只是測試台的事,對出貨有意義:** 任何被重燒 / factory reset 過的節點,
+在**所有已經認識它的節點**眼中身分都變了,DM 會靜默失效直到對方清掉舊記錄。
+現場換板、RMA 重燒都會踩到,而且症狀是「這兩顆就是不通」,沒有任何錯誤浮上來。
+
 ---
 
 ## 5. 基準線(2026-07-29,板上跑 `2.7.26.b2ffc23`)

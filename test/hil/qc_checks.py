@@ -692,8 +692,11 @@ def check_tunnel(dev: Device, rep, rs485_port: str, peer_port: str | None = None
             if not rep.check(
                 forwarded > 0,
                 f"the master forwarded the local frame to its peer ({forwarded} exchange(s))",
-                "the peer never saw the frame — the tunnel master is not forwarding "
-                "what appears on its local bus",
+                "the peer never saw the frame. Either the master is not forwarding "
+                "what appears on its local bus, or it forwarded and the router "
+                "dropped it -- check the master's log for 'tunnel fwd' (it did "
+                "forward) and the peer's for 'PKC decrypt attempted but failed' "
+                "(stale public key, see test/hil/CLAUDE.md §4.6)",
             ):
                 return
             rep.check(
