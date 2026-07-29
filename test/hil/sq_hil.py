@@ -288,9 +288,13 @@ PUBLIC_DEFAULT_PSK = bytes.fromhex("d4f1bb3a20290759f0bcffabcf4e6901")
 def check_factory_channel(dev: Device, rep: Report):
     """RF-03 — the board is claimed to be a shipping image; prove it is provisioned.
 
-    Nothing here prints or returns the PSK itself. A QC report is a document that
-    gets mailed around, and a factory key that travels with the paperwork is not a
-    factory key. Lengths and verdicts are enough to act on.
+    Reports lengths and verdicts, not the PSK itself. Not for secrecy — the factory
+    key is a published value (see CLAUDE.md §8) — but because a hex blob in a report
+    is noise no reader can act on, and the value belongs in exactly one place.
+
+    Note this check is about provisioning, not privacy: it proves the image carries
+    the factory channel rather than the stock Meshtastic default, which is what
+    separates a shipping image from a CI artifact.
     """
     rep.section("factory channel provisioning")
     rep.requirement("RF-03")
