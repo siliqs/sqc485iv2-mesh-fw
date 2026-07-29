@@ -279,6 +279,72 @@ def check_radio(dev: Device, rep: Report, strict: bool):
         rep.ok("bluetooth disabled (factory default)")
 
 
+# The expansion of the well-known "AQ==" default key. This is a belt-and-braces
+# check only -- the length gates in check_factory_channel are what carry RF-03, so
+# the requirement stays correct even if upstream ever changes this value.
+PUBLIC_DEFAULT_PSK = bytes.fromhex("d4f1bb3a20290759f0bcffabcf4e6901")
+
+
+def check_factory_channel(dev: Device, rep: Report):
+    """RF-03 — the board is claimed to be a shipping image; prove it is provisioned.
+
+    Nothing here prints or returns the PSK itself. A QC report is a document that
+    gets mailed around, and a factory key that travels with the paperwork is not a
+    factory key. Lengths and verdicts are enough to act on.
+    """
+    rep.section("factory channel provisioning")
+    rep.requirement("RF-03")
+
+    channels = dev.channels
+    if len(channels) < 2:
+        rep.bad(
+            f"no channel[1]: the node has {len(channels)} channel(s)",
+            "a shipping image is built with SQ_FACTORY_CH1_NAME/_PSK_HEX, which "
+            "provisions the secondary channel; a CI artifact has neither",
+        )
+        return
+
+    settings = channels[1].settings
+    name = getattr(settings, "name", "") or ""
+    psk = bytes(getattr(settings, "psk", b"") or b"")
+
+    if name:
+        rep.ok(f"channel[1] name = {name!r}")
+    else:
+        rep.bad(
+            "channel[1] has no name",
+            "SQ_FACTORY_CH1_NAME was empty or unset at build time",
+        )
+
+    if len(psk) in (16, 32):
+        rep.ok(f"channel[1] psk is {len(psk)} bytes (AES{len(psk) * 8})")
+    elif not psk:
+        rep.bad(
+            "channel[1] has no psk — the channel is unencrypted",
+            "an unencrypted factory channel is readable and writable by anyone in range",
+        )
+    elif len(psk) == 1:
+        rep.bad(
+            "channel[1] psk is a 1-byte default key index",
+            "a 1-byte psk selects a published Meshtastic default key; any stock app "
+            "joins this node out of the box",
+        )
+    else:
+        rep.bad(
+            f"channel[1] psk is {len(psk)} bytes, not a valid AES key length",
+            "Meshtastic accepts 0, 1, 16 or 32 only. Anything else was corrupted on "
+            "its way into the build, and the node ships looking flashed while "
+            "matching none of its peers",
+        )
+
+    if psk == PUBLIC_DEFAULT_PSK:
+        rep.bad(
+            "channel[1] psk is the published Meshtastic default key",
+            "the same key every stock installation ships with, so the channel is "
+            "public regardless of how long the key is",
+        )
+
+
 def check_config_roundtrip(dev: Device, rep: Report, saved_blob: bytes):
     rep.section("config round trip")
 
@@ -737,6 +803,14 @@ def main() -> int:
         help="treat a radio profile deviation as a failure (factory image verification)",
     )
     ap.add_argument(
+        "--factory",
+        action="store_true",
+        help="assert that the board is running a SHIPPING image, and verify it "
+        "carries the factory channel with a private PSK (RF-03). Without it that "
+        "requirement is skipped, because a CI artifact has no factory channel by "
+        "construction and failing it there would be noise",
+    )
+    ap.add_argument(
         "--json", metavar="PATH", help="also write the timings to a JSON file"
     )
     ap.add_argument(
@@ -827,6 +901,14 @@ def main() -> int:
         try:
             _run(rep, check_identity, dev, rep)
             _run(rep, check_radio, dev, rep, args.strict_radio)
+            if args.factory:
+                _run(rep, check_factory_channel, dev, rep)
+            else:
+                _skip_area(
+                    rep, "factory",
+                    "--factory not given: this board is not claimed to be a "
+                    "shipping image",
+                )
             _run(rep, check_config_roundtrip, dev, rep, saved_blob)
             _run(rep, qc_checks.check_blob_robustness, dev, rep)
             _run(rep, qc_checks.check_uplink_routing, dev, rep)

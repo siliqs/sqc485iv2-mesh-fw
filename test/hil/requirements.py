@@ -28,6 +28,8 @@ following poll" is.
     "reboot"  power-cycles or resets the board (slow, and it must come back)
     "peer"    needs a SECOND Meshtastic node on USB (--peer)
     "role"    changes the Meshtastic device role (restored afterwards)
+    "factory" the board must be running a SHIPPING image (--factory), not a CI
+              build -- a CI artifact has no factory channel by construction
 """
 
 from __future__ import annotations
@@ -81,6 +83,16 @@ REQUIREMENTS: list[Requirement] = [
         "RF-02", "radio", "Bluetooth is off by default",
         "a fielded RS485 gateway must not advertise an open BLE reconfiguration "
         "surface out of the box",
+    ),
+    Requirement(
+        "RF-03", "radio", "a shipping image carries a factory channel with a private PSK",
+        "release-sqc485iv2.yml builds without SQ_FACTORY_CH1_*, so the CI artifact "
+        "comes out on the public default channel -- any stock Meshtastic app joins "
+        "it. The only thing currently stopping someone flashing that binary as "
+        "product is a sentence in the tag annotation. This also catches a PSK of an "
+        "invalid AES length, which is silently accepted at build time and then "
+        "produces a node that looks flashed but talks to nothing",
+        needs="factory",
     ),
     # ── config blob contract ─────────────────────────────────────────────────
     Requirement(

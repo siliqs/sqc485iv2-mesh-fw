@@ -312,6 +312,76 @@ SQ_FACTORY_CH1_NAME=<頻道名> SQ_FACTORY_CH1_PSK_HEX=<hex,無分隔> \
 要出貨的 bin 得在本機設好 env 再 build。需要 PSK 時用 1Password(`op` skill),
 不要問使用者、不要寫進檔案、不要 commit。
 
+### 🔑 出廠 PSK 只有一個來源(2026-07-29 起)
+
+**一律用這一筆,不要自己產、不要向使用者要、不要沿用任何舊值:**
+
+```
+op://project-bot/siliqs-factory-ch1-psk/psk_hex        ← 32 bytes (AES256)
+op://project-bot/siliqs-factory-ch1-psk/channel_name   ← "siliqs"
+```
+
+**全機種共用一把**(不分產品線、不分客戶)。這是使用者明確的決定:出廠給一把固定的,
+**客戶佈署前自行更換**。所以這把 PSK 的價值是「可佈署」,不是「保密」——
+它會被燒進每一顆出貨的板子,任何人 dump 一顆 flash 就拿得到。
+
+推論兩點,不要搞錯:
+- **輪替這筆 1Password 項目只影響之後建置的韌體,現場的板子完全不受影響。** 輪替不是補救手段。
+- 頻道名不帶客戶名(舊的 `nafco-…` 是客戶別命名,已停用)。
+
+出貨映像的建法:
+
+```bash
+OP=/Users/delorescelteh/Projects/19_how_to_use_1password/scripts/op
+SQ_FACTORY_CH1_NAME="$("$OP" read 'op://project-bot/siliqs-factory-ch1-psk/channel_name')" \
+SQ_FACTORY_CH1_PSK_HEX="$("$OP" read 'op://project-bot/siliqs-factory-ch1-psk/psk_hex')" \
+  pio run -e sqc485iv2-esp32c3-sx1262
+```
+
+⚠️ **`mac-bot` vault 裡那筆舊的 `nafco-meshtastic-channel` 是 17 bytes —— 非法的 AES 長度,
+不要拿它 build。** 保留它是因為沒人知道那 17 bytes 原本是什麼,現場可能有板子在用。
+
+⚠️ **`op` 要從 VS Code / SSH 這一側跑。** 實測:Background launchd session(SSH / VS Code remote)
+走 `~/.config/op/sa-token` 正常,4 秒回應;**Aqua(GUI)session 反而會卡死** ——
+`op` 會去走 1Password 桌面 app 整合,停在一個沒人按的授權視窗上(遠端時永遠不會被按)。
+這跟 `op` skill 文件寫的方向相反,以實測為準。
+
+### 🚨 出廠頻道**只對全新的板子生效** —— 重燒一顆用過的板子不會套用
+
+`USERPREFS_CHANNEL_1_*` 只在 `Channels::initDefaults()` 裡被讀,而它的唯一呼叫點是:
+
+```cpp
+// NodeDB.cpp:497  resetRadioConfig()
+if (channelFile.channels_count != MAX_NUM_CHANNELS) {
+    channels.initDefaults();
+}
+```
+
+**頻道檔一旦存在且完整(`channels_count == 8`),這段就永遠不會跑。**
+而燒錄 app 分區**不會**動到 LittleFS(`test/hil/CLAUDE.md` §0 實測),所以:
+
+- **產線上的新板子** —— NodeDB 是空的 → 出廠頻道正常寫入 ✅
+- **重燒一顆已經用過 / 客戶退回 / 開發用的板子** —— 頻道檔還在 →
+  **出廠頻道靜默地不會被套用**,板子留在原本的頻道上,而且**沒有任何錯誤訊息** ❌
+
+2026-07-29 在 DUT `!81b8a03c` 上實測:`channels_count = 8`、`channel[0] psk_len=1`
+(公開預設)、`channel[1] psk_len=0`(未啟用)。燒出貨映像上去,這些**不會改變**。
+
+要讓出廠頻道生效,得先把頻道檔清掉(factory reset 或 `esptool erase_flash`)——
+那是不可逆操作,**要先問過**。
+
+**這條對出貨的意義**:任何「重工 / 維修後重燒」的流程,如果只燒 app 分區,
+出貨的板子會帶著上一手的頻道設定離開工廠。`RF-03` 抓得到,前提是有人跑它。
+
+**`RF-03` 就是擋這件事的閘門**(`needs="factory"`,平常 SKIP):
+
+```bash
+$V test/hil/sq_hil.py --device … --rs485 … --factory --strict-radio
+```
+
+它檢查 channel[1] 存在、有名字、PSK 長度是 16 或 32、而且不是 Meshtastic 公開預設。
+報告裡只印長度與判定,**不會印出 PSK 的值**。
+
 ---
 
 ## 9. 常用指令

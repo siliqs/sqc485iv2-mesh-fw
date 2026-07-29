@@ -32,6 +32,7 @@ NEEDS = {
     "reboot": "會重置板子(慢,而且它必須回得來)",
     "peer": "需要第二顆 Meshtastic 節點(--peer)",
     "role": "會改動 Meshtastic 的 device role(事後還原)",
+    "factory": "板上必須是出貨映像(--factory),CI build 依定義不會有出廠頻道",
 }
 
 TEXT: dict[str, dict[str, str]] = {
@@ -60,6 +61,12 @@ TEXT: dict[str, dict[str, str]] = {
     "RF-02": {
         "title": "出廠預設關閉 Bluetooth",
         "why": "現場部署的 RS485 閘道器不該在開箱狀態就對外廣播一個可重新配置的 BLE 介面",
+    },
+    "RF-03": {
+        "title": "出貨映像帶有出廠頻道,且 PSK 不是公開預設",
+        "why": "release-sqc485iv2.yml 建置時沒有帶 SQ_FACTORY_CH1_*,所以 CI 產出的 binary 跑的是公開預設頻道 —— "
+               "任何一支原廠 Meshtastic app 都能直接加入。現在唯一擋住有人把它當出貨映像燒的,只有 tag 說明裡的一句話。"
+               "這條同時擋掉長度非法的 PSK:建置時不會有人抱怨,燒出來卻是一顆看起來燒成功、實際上跟誰都對不上的節點",
     },
     # ── 設定 blob 契約 ────────────────────────────────────────────────────────
     "CFG-01": {

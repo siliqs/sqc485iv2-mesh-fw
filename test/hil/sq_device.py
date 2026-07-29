@@ -344,5 +344,9 @@ class Device:
         return self.iface.localNode.localConfig.bluetooth
 
     @property
+    def channels(self):
+        return self.iface.localNode.channels or []
+
+    @property
     def firmware_version(self) -> str:
         return getattr(self.iface.metadata, "firmware_version", "?")
