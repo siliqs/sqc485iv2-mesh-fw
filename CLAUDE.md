@@ -1,5 +1,12 @@
 # CLAUDE.md — sqc485iv2-mesh-fw
 
+> ⚠️ **retired 2026-07-31 — read [`HANDOVER.md`](HANDOVER.md) FIRST, before anything
+> below.** This repo is archived (read-only) on GitHub. The active repo is
+> `/Users/delorescelteh/Projects/sqs-sensor-mesh-fw`. Everything past this notice
+> describes this repo as it was while alive — still useful for board-level / RS485
+> detail that hasn't been superseded, but do not plan new work against it without
+> reading the handover first.
+
 這是 **Siliqs 的 Meshtastic fork**(`git@github.com:siliqs/sqc485iv2-mesh-fw.git`),
 單一產品線:**SQC485Iv2**(RS485 → Mesh 工業節點)。上游 Meshtastic 的通用知識
 (module 架構、Observer、加密、protobuf、CI)都寫在既有文件裡,**這份檔案只寫
