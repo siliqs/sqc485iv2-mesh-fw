@@ -360,6 +360,19 @@ SQ_FACTORY_CH1_PSK_HEX="$("$OP" read 'op://project-bot/siliqs-factory-ch1-psk/ps
 `op` 會去走 1Password 桌面 app 整合,停在一個沒人按的授權視窗上(遠端時永遠不會被按)。
 這跟 `op` skill 文件寫的方向相反,以實測為準。
 
+**2026-07-30 補充:Aqua session 卡死的真正根因是 Full Disk Access,不是「一定要走 Background
+session」。** 在 Mac-mini-m4 上實測:跑 gateway 的 node process(`launchd` 直接啟動,不經
+Terminal.app)從未被授權 Full Disk Access,導致**任何**碰 `~/Library/Group Containers/
+2BUA8C4S2C.com.1password/` 的呼叫(`op`、甚至一個單純的 `find`)都無限卡住(0% CPU,不報錯、
+不 timeout)——連 `tmutil latestbackup` 都會用一模一樣的方式卡住/報錯,這是同一個 TCC 缺口,
+不是 1Password 專屬的怪癖。系統設定 → 隱私權與安全性 → 完整磁碟取用權限,把 gateway 實際跑
+的那個 node 二進位檔(`/opt/homebrew/opt/node@24/bin/node`,用 `launchctl list | grep openclaw`
++ `PlistBuddy -c "Print :ProgramArguments"` 對應的 plist 找出正確路徑)加進去、重啟 gateway,
+Aqua session 下 `op whoami` 就能在 2 秒內正常回應。**這條路徑本來就沒試過** ——上面那段
+「一定要走 Background session」的結論是在沒檢查 FDA 的情況下下的,兩者不衝突:FDA 沒開,
+Background session(走檔案 fallback)能繞過去;FDA 開了,Aqua session 也能直接用桌面整合。
+遇到同樣的卡死,先查 `tmutil latestbackup` 有沒有報 FDA 錯誤,那是比重試 `op` 快得多的診斷。
+
 ### 🚨 出廠頻道**只對全新的板子生效** —— 重燒一顆用過的板子不會套用
 
 `USERPREFS_CHANNEL_1_*` 只在 `Channels::initDefaults()` 裡被讀,而它的唯一呼叫點是:
