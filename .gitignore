@@ -57,3 +57,4 @@ CMakeLists.txt
 .claude/scheduled_tasks.lock
 userPrefs.jsonc.mcp-session-bak
 CLAUDE.md
+test/hil/CLAUDE.md
