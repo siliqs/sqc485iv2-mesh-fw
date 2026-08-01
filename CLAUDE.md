@@ -359,7 +359,7 @@ SQ_FACTORY_CH1_PSK_HEX="$("$OP" read 'op://project-bot/siliqs-factory-ch1-psk/ps
   pio run -e sqc485iv2-esp32c3-sx1262
 ```
 
-⚠️ **`mac-bot` vault 裡那筆舊的 `nafco-meshtastic-channel` 是 17 bytes —— 非法的 AES 長度,
+⚠️ **`m4` vault 裡那筆舊的 `nafco-meshtastic-channel` 是 17 bytes —— 非法的 AES 長度,
 不要拿它 build。** 保留它是因為沒人知道那 17 bytes 原本是什麼,現場可能有板子在用。
 
 ⚠️ **`op` 要從 VS Code / SSH 這一側跑。** 實測:Background launchd session(SSH / VS Code remote)
