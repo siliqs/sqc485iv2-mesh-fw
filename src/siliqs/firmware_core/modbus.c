@@ -61,13 +61,19 @@ static uint8_t transact(const sq_modbus_t *mb, const uint8_t *req, size_t reqlen
     hal_serial_set_tx(false);
 
     /* Half-duplex boards tie /RE low, so everything transmitted comes straight
-       back. Drain exactly that much before listening for the slave. */
+       back. Drain exactly that much before listening for the slave — and check
+       it actually IS our own request mirrored back, not just that enough bytes
+       showed up. Bus noise/collision landing in the echo window would otherwise
+       be silently treated as our own TX and go on to be misread as (or corrupt)
+       the start of the slave's reply. */
     if (BOARD.rs485_tx_echo) {
         uint8_t echo[8];
         if (reqlen > sizeof(echo))
             return SQ_MB_ERR_SHORT;
         if (!read_exact(echo, reqlen, mb->response_timeout_ms))
             return SQ_MB_ERR_TIMEOUT;
+        if (memcmp(echo, req, reqlen) != 0)
+            return SQ_MB_ERR_MISMATCH;
     }
 
     /* Address and function first: the function's high bit is what says whether

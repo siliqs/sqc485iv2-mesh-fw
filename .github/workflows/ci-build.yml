@@ -1,0 +1,48 @@
+# Siliqs build gate — the ONE workflow we keep on this Meshtastic fork.
+# All ~28 inherited upstream workflows (trunk / semgrep / docker / ppa / nightly …)
+# are disabled on this repo via the Actions API, so they don't touch our PRs.
+#
+# This just builds the Siliqs product envs so a broken/unlinkable build is caught
+# before merge (e.g. a HAL symbol only compiled under one board #ifdef).
+#
+# Runs on pull_request only: for a PR, GitHub builds the MERGE commit using this
+# file from the base branch, so the SQS env (added by the M0–M2 PR) is present even
+# though `main` alone doesn't have it yet. No `push` trigger, so adding this file to
+# `main` does not itself kick off a (failing) build before that PR lands.
+name: CI Build (Siliqs)
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build product envs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # Meshtastic's version step uses `git describe`
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Cache PlatformIO
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.platformio
+            ~/.cache/pip
+          key: pio-${{ runner.os }}-${{ hashFiles('platformio.ini', 'variants/**/platformio.ini') }}
+          restore-keys: pio-${{ runner.os }}-
+
+      - name: Install PlatformIO
+        run: pip install --upgrade platformio
+
+      - name: Build SQS-TH-I + SQC485Iv2
+        run: pio run -e sqs-th-i-esp32c3-sx1262 -e sqc485iv2-esp32c3-sx1262

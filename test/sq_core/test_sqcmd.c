@@ -218,7 +218,7 @@ void test_sqcmd_bare_modbus_frame_is_misread_as_a_header(void)
 
 void test_sqcmd_accepts_every_supported_blob_version(void)
 {
-    for (uint8_t version = 2; version <= 4; version++) {
+    for (uint8_t version = 2; version <= 5; version++) {
         uint8_t blob[64];
         memset(blob, 0, sizeof(blob));
         blob[0] = 'S';

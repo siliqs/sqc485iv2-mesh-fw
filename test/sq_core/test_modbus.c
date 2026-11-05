@@ -145,6 +145,26 @@ void test_modbus_handles_both_echo_polarities(void)
     }
 }
 
+/* If bus noise/collision stomps on our own TX echo, that must not be silently
+   accepted just because the right number of bytes showed up — it is just as
+   much evidence of a bad transaction as noise in the slave's reply, and reading
+   on from a desynced position would risk misparsing whatever comes next. */
+void test_modbus_rejects_corrupted_echo(void)
+{
+    fresh();
+    mock_board()->rs485_tx_echo = true;
+    mock_serial_set_mode(MOCK_RSP_GOOD);
+    mock_serial_corrupt_echo(true);
+
+    sq_modbus_t mb = link_defaults();
+    uint8_t out[OUT_CAP], err = 0xFF;
+    size_t n = modbus_read_raw(&mb, 1, 3, 0, 2, out, sizeof(out), &err, NULL);
+
+    ASSERT_EQ(0, n);
+    ASSERT_EQ(SQ_MB_ERR_MISMATCH, err);
+    ASSERT_EQ(4, mock_serial_tx_count()); /* retries=3 -> 4 attempts, echo fails every time */
+}
+
 /* ── rejection paths ──────────────────────────────────────────────────────── */
 
 static void assert_read_fails(mock_rsp_t mode, uint8_t expect_err, size_t expect_attempts)

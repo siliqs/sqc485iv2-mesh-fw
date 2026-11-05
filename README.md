@@ -21,6 +21,17 @@
 	<a href="https://meshtastic.org/docs/">Documentation</a>
 </div>
 
+## Siliqs SQC485Iv2-MH
+
+This repository is the published source code of the firmware for the **Siliqs SQC485Iv2-MH** (RS485 mesh node), version **1.4.2**. It is based on the Meshtastic firmware.
+
+- **Configure a device:** <https://mesh.siliqs.net>
+- **Flash firmware:** <https://flasher.siliqs.net>
+- **Build:** `pio run -e sqc485iv2-esp32c3-sx1262`
+- **License:** GPL-3.0 (see [LICENSE](LICENSE))
+
+The factory channel key is not part of this repository. A build from this source uses the public default channel.
+
 ## Overview
 
 This repository contains the official device firmware for Meshtastic, an open-source LoRa mesh networking project designed for long-range, low-power communication without relying on internet or cellular infrastructure. The firmware supports various hardware platforms, including ESP32, nRF52, RP2040/RP2350, and Linux-based devices.

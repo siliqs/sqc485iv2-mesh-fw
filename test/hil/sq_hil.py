@@ -1,15 +1,21 @@
 #!/usr/bin/env python3
 """
-sq_hil.py — hardware-in-the-loop acceptance run for the SQC485Iv2.
+sq_hil.py — hardware-in-the-loop acceptance run for SQC485Iv2 and SQS-TH-I.
 
 Everything the host tests cannot reach: that the built image on a real board
 comes up on the certified radio profile, answers the configurator handshake,
-survives a config round trip, and actually reads a Modbus slave over RS485 and
-forwards the bytes unchanged.
+survives a config round trip, and (SQC485Iv2) actually reads a Modbus slave
+over RS485 and forwards the bytes unchanged, or (SQS-TH-I) produces a
+plausible reading from the on-board sensor and duty-cycles correctly.
+
+Which product is connected is detected automatically (sq_device.detect_product)
+-- SQC485Iv2-only and SQS-TH-I-only requirements are skipped for the board that
+is not there, so a run against either board reports true gaps, not "wrong
+product" noise. See requirements.py's module docstring for the `product` field.
 
 Rig:
-    SQC485Iv2 USB console  ──  this machine
-    USB-RS485 dongle       ──  this machine, wired to the device's A/B terminals
+    SQC485Iv2 or SQS-TH-I USB console  ──  this machine
+    USB-RS485 dongle (SQC485Iv2 only)  ──  this machine, wired to the device's A/B terminals
 
 The device's configuration is read before the run and written back afterwards,
 so a HIL run leaves the board as it found it.
@@ -35,10 +41,11 @@ sys.path.insert(0, str(HERE))
 import qc_checks  # noqa: E402
 import report as qc_report  # noqa: E402
 import requirements as req  # noqa: E402
+import sensor_checks  # noqa: E402
 import sq_protocol as sq  # noqa: E402
 from modbus_slave import ModbusSlave, crc16  # noqa: E402
 from serial_echo import SerialEcho  # noqa: E402
-from sq_device import Device, DeviceError  # noqa: E402
+from sq_device import Device, DeviceError, detect_product  # noqa: E402
 
 REPO = HERE.parents[1]
 
@@ -50,6 +57,11 @@ GREEN, RED, YELLOW, DIM, BOLD, OFF = (
     "\033[1m",
     "\033[0m",
 )
+
+# SQC485Iv2's SQ_FEATURES (config.h) — kept in sync by hand, same convention as
+# sensor_checks.SENSOR_EXPECTED_FEATURES. Bit 0x80 (SQ_FEAT_GATEWAY_REPLY) joined
+# the set when config schema v5 shipped the gateway Modbus-slave reply feature.
+SQC485IV2_EXPECTED_FEATURES = 0x01 | 0x02 | 0x04 | 0x08 | 0x10 | 0x20 | 0x80
 
 # ── certified radio profile ──────────────────────────────────────────────────
 # The Taiwan DTS envelope the product is type-approved for. These are factory
@@ -221,9 +233,9 @@ def check_identity(dev: Device, rep: Report):
     )
     rep.requirement("ID-03")
     rep.check(
-        cap.features == 0x3F,
-        f"all six features advertised (0x{cap.features:02x})",
-        f"features 0x{cap.features:02x}, expected 0x3F",
+        cap.features == SQC485IV2_EXPECTED_FEATURES,
+        f"all seven features advertised (0x{cap.features:02x})",
+        f"features 0x{cap.features:02x}, expected 0x{SQC485IV2_EXPECTED_FEATURES:02x}",
     )
 
     rep.requirement("ID-04")
@@ -289,7 +301,7 @@ def check_factory_channel(dev: Device, rep: Report):
     """RF-03 — the board is claimed to be a shipping image; prove it is provisioned.
 
     Reports lengths and verdicts, not the PSK itself. Not for secrecy — the factory
-    key is a published value (see CLAUDE.md §8) — but because a hex blob in a report
+    key is a published value (see root CLAUDE.md §7) — but because a hex blob in a report
     is noise no reader can act on, and the value belongs in exactly one place.
 
     Note this check is about provisioning, not privacy: it proves the image carries
@@ -785,11 +797,54 @@ def _skip_area(rep: Report, needs: str, why: str):
             rep.skip(requirement.id, why)
 
 
+def _restore_config(rep: Report, dev: Device, device_port: str, saved_blob: bytes):
+    """Put the board back the way this run found it. Shared by both product flows.
+
+    A release gate must never be able to strand the board it is gating. Whatever
+    failed above, the node goes back to the config it arrived with — and if even
+    that cannot be done, the blob is printed so a human can put it back by hand.
+    """
+    rep.section("cleanup")
+    try:
+        dev.quiesce()  # stop it polling first; a busy node is hard to talk to
+        status = dev.apply_config(saved_blob)
+        rep.check(
+            status == 0,
+            "original configuration restored",
+            f"restore failed: {sq.CONFIG_STATUS.get(status, status)}",
+        )
+    except DeviceError as exc:
+        rep.bad("could not restore the original configuration", str(exc))
+        rep.info("restore it by hand with:")
+        rep.info(
+            f"  python3 test/hil/restore_config.py --port {device_port} "
+            f"--blob {saved_blob.hex()}"
+        )
+
+
+def _skip_wrong_product(rep: Report, connected: str):
+    """Mark every requirement that doesn't apply to the connected board's product.
+
+    Without this, running against an SQS-TH-I board would leave every
+    SQC485Iv2-only requirement (which has no `needs` tag of its own — ID-01..04,
+    CFG-*, BUS-*, POLL-*, MODE-*, FEAT-01, etc.) at NOT RUN, and a gate that
+    reports gaps for a product that was never claimed to be connected is not
+    telling you anything true.
+    """
+    for requirement in req.REQUIREMENTS:
+        if requirement.product not in ("shared", connected):
+            rep.skip(requirement.id, f"not applicable to {connected}")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    ap.add_argument("--device", help="SQC485Iv2 USB console (default: autodetect)")
+    ap.add_argument(
+        "--device",
+        help="SQC485Iv2 or SQS-TH-I USB console (default: autodetect). Which "
+        "product is auto-detected once connected",
+    )
     ap.add_argument("--rs485", help="USB-RS485 dongle (default: autodetect)")
     ap.add_argument(
         "--peer",
@@ -857,10 +912,18 @@ def main() -> int:
     args = ap.parse_args()
 
     device_port = args.device or find_port(
-        ["/dev/cu.usbmodem*"], "SQC485Iv2 console", "--device"
+        ["/dev/cu.usbmodem*"], "Siliqs console", "--device"
     )
+
+    # Which product is on the other end decides almost everything below (which
+    # portnum to talk on, whether the RS485 dongle lookup is even relevant) --
+    # find out before committing to either flow. See sq_device.detect_product's
+    # own docstring for why this asks both ports at once instead of guessing.
+    product_id, portnum = detect_product(device_port)
+    is_sensor = product_id == "SQS-TH-I"
+
     rs485_port = None
-    if not args.skip_rs485:
+    if not is_sensor and not args.skip_rs485:
         # A CH340 dongle enumerates under both the WCH and the generic namespace;
         # prefer the WCH node and never offer the same adapter twice.
         rs485_port = args.rs485 or find_port(
@@ -873,9 +936,10 @@ def main() -> int:
             "--rs485",
         )
 
-    print(f"\n{BOLD}SQC485Iv2 hardware in the loop{OFF}")
-    print(f"  {DIM}console {device_port}{OFF}")
-    print(f"  {DIM}rs485   {rs485_port or 'skipped'}{OFF}")
+    print(f"\n{BOLD}{product_id} hardware in the loop{OFF}")
+    print(f"  {DIM}console {device_port} (portnum {portnum}){OFF}")
+    if not is_sensor:
+        print(f"  {DIM}rs485   {rs485_port or 'skipped'}{OFF}")
 
     rep = Report()
     started = time.monotonic()
@@ -892,7 +956,9 @@ def main() -> int:
         "dut": {},
     }
 
-    with Device(device_port) as dev:
+    with Device(device_port, portnum=portnum) as dev:
+        _skip_wrong_product(rep, "sqs-th-i" if is_sensor else "sqc485iv2")
+
         saved_cfg, saved_blob = dev.get_config()
         # Capture identity now: the report has to survive whatever the run does
         # to the board afterwards, and `dev` is closed by the time it is written.
@@ -902,72 +968,66 @@ def main() -> int:
             f"{len(saved_blob)} byte blob{OFF}"
         )
 
-        try:
-            _run(rep, check_identity, dev, rep)
-            _run(rep, check_radio, dev, rep, args.strict_radio)
-            if args.factory:
-                _run(rep, check_factory_channel, dev, rep)
-            else:
-                _skip_area(
-                    rep, "factory",
-                    "--factory not given: this board is not claimed to be a "
-                    "shipping image",
-                )
-            _run(rep, check_config_roundtrip, dev, rep, saved_blob)
-            _run(rep, qc_checks.check_blob_robustness, dev, rep)
-            _run(rep, qc_checks.check_uplink_routing, dev, rep)
-            _run(rep, qc_checks.check_ble_power, dev, rep)
-
-            if rs485_port and _run(rep, check_rs485_echo, dev, rep, rs485_port):
-                _run(rep, check_rs485, dev, rep, rs485_port)
-                _run(rep, qc_checks.check_link_params, dev, rep, rs485_port)
-                _run(rep, qc_checks.check_fc4_and_gap, dev, rep, rs485_port)
-                _run(rep, qc_checks.check_corrupt_reply, dev, rep, rs485_port)
-                _run(rep, qc_checks.check_interval_change, dev, rep, rs485_port)
-                _run(rep, qc_checks.check_idle_mode, dev, rep, rs485_port)
-                _run(rep, qc_checks.check_tunnel, dev, rep, rs485_port, args.peer)
-            elif rs485_port:
-                rep.info("skipping the Modbus checks — the bus itself is not working")
-                _skip_area(rep, "rs485", "the bus is not working")
-            else:
-                _skip_area(rep, "rs485", "--skip-rs485")
-
-            # Reboot-bounded checks go last: everything above is cheaper, and a
-            # board that cannot come back should not invalidate results already
-            # in hand.
-            if args.skip_reboot:
-                _skip_area(rep, "reboot", "--skip-reboot")
-            else:
-                _run(rep, qc_checks.check_persistence, dev, rep)
-                _run(rep, qc_checks.check_boot_reliability, dev, rep, args.boot_rounds)
-
-            if args.deep_sleep:
-                _run(rep, qc_checks.check_deep_sleep, dev, rep)
-            else:
-                _skip_area(rep, "role", "not requested (--deep-sleep)")
-            if not args.peer:
-                _skip_area(rep, "peer", "no second node given (--peer)")
-        finally:
-            rep.section("cleanup")
-            # A release gate must never be able to strand the board it is
-            # gating. Whatever failed above, the node goes back to the config it
-            # arrived with — and if even that cannot be done, the blob is printed
-            # so a human can put it back by hand.
+        if is_sensor:
             try:
-                dev.quiesce()  # stop it polling first; a busy node is hard to talk to
-                status = dev.apply_config(saved_blob)
-                rep.check(
-                    status == 0,
-                    "original configuration restored",
-                    f"restore failed: {sq.CONFIG_STATUS.get(status, status)}",
-                )
-            except DeviceError as exc:
-                rep.bad("could not restore the original configuration", str(exc))
-                rep.info("restore it by hand with:")
-                rep.info(
-                    f"  python3 test/hil/restore_config.py --port {device_port} "
-                    f"--blob {saved_blob.hex()}"
-                )
+                _run(rep, sensor_checks.check_identity_sensor, dev, rep)
+                _run(rep, check_radio, dev, rep, args.strict_radio)  # shared RF-01/02
+                _run(rep, sensor_checks.check_sensor_reading, dev, rep)
+                if args.deep_sleep:
+                    _run(rep, sensor_checks.check_sensor_deep_sleep, dev, rep)
+                else:
+                    _skip_area(rep, "role", "not requested (--deep-sleep)")
+            finally:
+                _restore_config(rep, dev, device_port, saved_blob)
+        else:
+            try:
+                _run(rep, check_identity, dev, rep)
+                _run(rep, check_radio, dev, rep, args.strict_radio)
+                if args.factory:
+                    _run(rep, check_factory_channel, dev, rep)
+                else:
+                    _skip_area(
+                        rep, "factory",
+                        "--factory not given: this board is not claimed to be a "
+                        "shipping image",
+                    )
+                _run(rep, check_config_roundtrip, dev, rep, saved_blob)
+                _run(rep, qc_checks.check_blob_robustness, dev, rep)
+                _run(rep, qc_checks.check_uplink_routing, dev, rep)
+                _run(rep, qc_checks.check_ble_power, dev, rep)
+
+                if rs485_port and _run(rep, check_rs485_echo, dev, rep, rs485_port):
+                    _run(rep, check_rs485, dev, rep, rs485_port)
+                    _run(rep, qc_checks.check_link_params, dev, rep, rs485_port)
+                    _run(rep, qc_checks.check_fc4_and_gap, dev, rep, rs485_port)
+                    _run(rep, qc_checks.check_corrupt_reply, dev, rep, rs485_port)
+                    _run(rep, qc_checks.check_interval_change, dev, rep, rs485_port)
+                    _run(rep, qc_checks.check_idle_mode, dev, rep, rs485_port)
+                    _run(rep, qc_checks.check_tunnel, dev, rep, rs485_port, args.peer)
+                    _run(rep, qc_checks.check_gateway_reply, dev, rep, rs485_port, args.peer)
+                elif rs485_port:
+                    rep.info("skipping the Modbus checks — the bus itself is not working")
+                    _skip_area(rep, "rs485", "the bus is not working")
+                else:
+                    _skip_area(rep, "rs485", "--skip-rs485")
+
+                # Reboot-bounded checks go last: everything above is cheaper, and a
+                # board that cannot come back should not invalidate results already
+                # in hand.
+                if args.skip_reboot:
+                    _skip_area(rep, "reboot", "--skip-reboot")
+                else:
+                    _run(rep, qc_checks.check_persistence, dev, rep)
+                    _run(rep, qc_checks.check_boot_reliability, dev, rep, args.boot_rounds)
+
+                if args.deep_sleep:
+                    _run(rep, qc_checks.check_deep_sleep, dev, rep)
+                else:
+                    _skip_area(rep, "role", "not requested (--deep-sleep)")
+                if not args.peer:
+                    _skip_area(rep, "peer", "no second node given (--peer)")
+            finally:
+                _restore_config(rep, dev, device_port, saved_blob)
 
     elapsed = time.monotonic() - started
 

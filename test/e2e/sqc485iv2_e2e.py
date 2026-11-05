@@ -15,6 +15,7 @@ have (a wired Modbus slave) are reported SKIP, not FAIL.
 import argparse
 import glob
 import os
+import re
 import struct
 import subprocess
 import sys
@@ -46,6 +47,8 @@ SQ_FEAT = {
     0x08: "POLL_NOW",
     0x10: "DEEP_SLEEP",
     0x20: "GET_CONFIG",
+    0x40: "SENSOR",
+    0x80: "GATEWAY_REPLY",
 }
 PARITY = {0: "N", 1: "E", 2: "O"}
 SQ_BLOB_HDR = 37
@@ -112,6 +115,23 @@ def source_config_version(repo):
             if line.startswith("#define SQ_CONFIG_VERSION"):
                 return int(line.split()[2])
     return None
+
+
+def source_features(repo):
+    """SQ_FEATURES for SQC485Iv2 (the #else branch of `#ifdef SQS_TH_I`), as the
+    source tree declares it -- so this check never goes stale the way a hardcoded
+    bitmask did (SQ_FEAT_GATEWAY_REPLY shipped without this test being updated)."""
+    path = os.path.join(repo, "src/siliqs/firmware_core/include/config.h")
+    with open(path) as fh:
+        text = fh.read()
+    bits = {name: int(val, 16) for name, val in re.findall(r"#define\s+(SQ_FEAT_\w+)\s+(0x[0-9A-Fa-f]+)", text)}
+    m = re.search(r"#ifdef SQS_TH_I\b.*?#else\b(.*?)#endif", text, re.DOTALL)
+    if not m:
+        return None
+    feats = 0
+    for name in re.findall(r"SQ_FEAT_\w+", m.group(1)):
+        feats |= bits[name]
+    return feats
 
 
 # Paths whose content decides what ends up in the image. A commit that touches
@@ -274,12 +294,13 @@ def check_capability(node, rep, repo):
     rep.check("SQ_FW_VERSION matches the source tree", fw == want_fw, f"node {fw}, source {want_fw}")
     want_blob = source_config_version(repo)
     rep.check("blob version matches SQ_CONFIG_VERSION", blob_ver == want_blob, f"node {blob_ver}, source {want_blob}")
-    rep.check("all six features advertised", feats == 0x3F, f"0x{feats:02x}")
+    want_feats = source_features(repo)
+    rep.check("SQ_FEATURES matches the source tree", feats == want_feats, f"node 0x{feats:02x}, source 0x{want_feats:02x}")
     return blob_ver
 
 
 def parse_blob(blob):
-    """Decode a config blob (config_to_blob layout, v3/v4)."""
+    """Decode a config blob (config_to_blob layout, v3/v4/v5)."""
     ver, flags = blob[2], blob[3]
     cfg = {
         "version": ver,
@@ -306,6 +327,21 @@ def parse_blob(blob):
     cfg["dest_node"], cfg["tx_channel"] = struct.unpack_from("<IB", blob, tx)
     if ver >= 4:
         cfg["peer_node"], cfg["idle_gap_ms"] = struct.unpack_from("<IH", blob, tx + 5)
+    if ver >= 5:
+        gw = tx + 5 + 6  # right after the tx-routing (5) and tunnel (6) sections
+        gw_flags = blob[gw]
+        cfg["gw_transparent_enabled"] = bool(gw_flags & 0x01)
+        cfg["gw_aggregated_enabled"] = bool(gw_flags & 0x02)
+        cfg["gw_aggregated_slave_addr"] = blob[gw + 1]
+        cfg["gw_staleness_threshold_s"] = struct.unpack_from("<I", blob, gw + 2)[0]
+        cfg["gw_map_count"] = blob[gw + 6]
+        cfg["gw_map"] = [
+            dict(zip(("node_id", "src_slave", "src_func", "src_reg_start", "src_reg_count", "virt_reg_offset"),
+                     struct.unpack_from("<IBBHHH", blob, gw + 7 + i * 12)))
+            for i in range(cfg["gw_map_count"])
+        ]
+    else:
+        cfg["gw_map_count"] = 0
     return cfg
 
 
@@ -323,7 +359,8 @@ def check_get_config(node, rep, blob_ver):
         rep.check("blob version matches the capability reply", blob[2] == blob_ver, str(blob[2]))
 
     cfg = parse_blob(blob)
-    expect_len = SQ_BLOB_HDR + cfg["poll_count"] * 6 + 5 + (6 if cfg["version"] >= 4 else 0) + 2
+    expect_len = (SQ_BLOB_HDR + cfg["poll_count"] * 6 + 5 + (6 if cfg["version"] >= 4 else 0)
+                  + ((7 + cfg["gw_map_count"] * 12) if cfg["version"] >= 5 else 0) + 2)
     rep.check("blob length matches the declared poll_count", len(blob) == expect_len,
               f"{len(blob)} bytes, expected {expect_len}")
 

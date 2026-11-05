@@ -27,6 +27,8 @@ import make_golden  # noqa: E402 — the sys.path insert above has to come first
 FLAG_CONFIRMED = make_golden.FLAG_CONFIRMED
 FLAG_RS485_OFF = make_golden.FLAG_RS485_OFF
 FLAG_TUNNEL_ON = make_golden.FLAG_TUNNEL_ON
+FLAG_GW_TRANSPARENT = make_golden.FLAG_GW_TRANSPARENT
+FLAG_GW_AGGREGATED = make_golden.FLAG_GW_AGGREGATED
 build_blob = make_golden.build
 crc16 = make_golden.crc16
 
@@ -127,6 +129,28 @@ class Poll:
 
 
 @dataclass
+class GwMapEntry:
+    """One row of a v5 gateway's poll-plan mirror (config.h's sq_gw_map_entry_t)."""
+
+    node_id: int
+    src_slave: int
+    src_func: int
+    src_reg_start: int
+    src_reg_count: int
+    virt_reg_offset: int
+
+    def as_tuple(self):
+        return (
+            self.node_id,
+            self.src_slave,
+            self.src_func,
+            self.src_reg_start,
+            self.src_reg_count,
+            self.virt_reg_offset,
+        )
+
+
+@dataclass
 class Config:
     """The device-side view of a config blob (the read plan and link settings)."""
 
@@ -148,6 +172,10 @@ class Config:
     tx_channel: int = 0
     tunnel_peer: int = 0
     tunnel_idle_gap: int = 20
+    gw_flags: int = 0
+    gw_agg_slave: int = 1
+    gw_staleness_s: int = 3600
+    gw_map: list[GwMapEntry] = field(default_factory=list)
 
     def to_blob(self) -> bytes:
         flags = 0
@@ -174,6 +202,10 @@ class Config:
             tx_channel=self.tx_channel,
             tunnel_peer=self.tunnel_peer,
             tunnel_idle_gap=self.tunnel_idle_gap,
+            gw_flags=self.gw_flags,
+            gw_agg_slave=self.gw_agg_slave,
+            gw_staleness_s=self.gw_staleness_s,
+            gw_map=[e.as_tuple() for e in self.gw_map],
         )
 
     @property
@@ -186,12 +218,23 @@ def parse_blob(blob: bytes) -> Config:
     if len(blob) < 39 or blob[0:2] != b"SQ":
         raise ValueError(f"not a config blob: {blob[:4].hex()}")
     version = blob[2]
-    if version not in (2, 3, 4):
+    if version not in (2, 3, 4, 5):
         raise ValueError(f"unsupported blob version {version}")
 
     poll_count = blob[36]
     extra = (5 if version >= 3 else 0) + (6 if version >= 4 else 0)
-    need = 37 + poll_count * 6 + extra + 2
+    # v5's gateway block is variable-length (map_count rows of 12 bytes each), so
+    # its own length can only be known after reading map_count off the wire --
+    # unlike v3/v4's fixed-size additions, this can't fold into `extra` up front.
+    v5_off = 37 + poll_count * 6 + extra
+    map_count = 0
+    if version >= 5:
+        if len(blob) < v5_off + 7 + 2:
+            raise ValueError(f"blob too short for a v5 gateway header: {len(blob)} bytes")
+        map_count = blob[v5_off + 6]
+        need = v5_off + 7 + map_count * 12 + 2
+    else:
+        need = v5_off + 2
     if len(blob) != need:
         raise ValueError(f"blob length {len(blob)} != expected {need}")
     if struct.unpack_from("<H", blob, need - 2)[0] != crc16(blob[: need - 2]):
@@ -224,6 +267,23 @@ def parse_blob(blob: bytes) -> Config:
         off = 37 + poll_count * 6 + 5
         cfg.tunnel_peer = struct.unpack_from("<I", blob, off)[0]
         cfg.tunnel_idle_gap = struct.unpack_from("<H", blob, off + 4)[0]
+    if version >= 5:
+        cfg.gw_flags = blob[v5_off]
+        cfg.gw_agg_slave = blob[v5_off + 1]
+        cfg.gw_staleness_s = struct.unpack_from("<I", blob, v5_off + 2)[0]
+        row_off = v5_off + 7
+        for _ in range(map_count):
+            node_id = struct.unpack_from("<I", blob, row_off)[0]
+            src_slave, src_func = blob[row_off + 4], blob[row_off + 5]
+            src_reg_start, src_reg_count, virt_reg_offset = struct.unpack_from(
+                "<HHH", blob, row_off + 6
+            )
+            cfg.gw_map.append(
+                GwMapEntry(
+                    node_id, src_slave, src_func, src_reg_start, src_reg_count, virt_reg_offset
+                )
+            )
+            row_off += 12
     return cfg
 
 

@@ -184,7 +184,8 @@ def _table_md(header: list[str], rows: list[list[str]]) -> list[str]:
 def build_markdown(rep, meta: dict) -> str:
     s = _summary(rep)
     L: list[str] = []
-    L.append(f"# SQC485Iv2 QC 驗收報告 — {'通過' if s['passed'] else '未通過'}")
+    product = meta.get("dut", {}).get("product_id") or "SQC485Iv2"
+    L.append(f"# {product} QC 驗收報告 — {'通過' if s['passed'] else '未通過'}")
     L.append("")
     L.append(f"**{meta['started_human']}**")
     L.append("")
@@ -473,9 +474,10 @@ def build_pdf(rep, meta: dict, path: pathlib.Path) -> tuple[pathlib.Path | None,
         s = _summary(rep)
         pdf = _new_pdf(font)
 
+        product = meta.get("dut", {}).get("product_id") or "SQC485Iv2"
         _h1(
             pdf,
-            f"SQC485Iv2 QC 驗收報告 — {'通過' if s['passed'] else '未通過'}",
+            f"{product} QC 驗收報告 — {'通過' if s['passed'] else '未通過'}",
             GREEN if s["passed"] else RED,
         )
         _para(pdf, meta["started_human"], size=9, colour=MUTED, gap=1.0)

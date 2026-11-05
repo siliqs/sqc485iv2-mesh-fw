@@ -1,0 +1,62 @@
+name: Release (SQS-TH-I)
+
+on:
+  push:
+    tags:
+      - "sqs-th-i-v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install PlatformIO
+        run: |
+          python -m pip install -U pip
+          pip install -U platformio
+          pio --version
+
+      # Build the SQS-TH-I PRODUCT env — NOT the generic heltec-ht62 env, which
+      # lacks -D SQS_TH_I, the TW/DTS radio defaults, the src/siliqs include path
+      # (SQ_FW_VERSION) and USB-CDC console. A heltec-ht62 build would ship a plain
+      # Meshtastic node on LongFast.
+      # NOTE: this CI build does NOT inject the factory channel PSK
+      # (SQ_FACTORY_CH1_PSK_HEX / SQ_FACTORY_CH1_NAME are never in this repo), so the
+      # artifact here has no baked factory channel. The bins published to the flasher
+      # are built with those env vars set locally — treat CI output as a build check,
+      # not the shippable factory image, until the PSK is wired in via Actions secrets.
+      - name: Build firmware (SQS-TH-I product env)
+        run: |
+          pio run -e sqs-th-i-esp32c3-sx1262
+
+      - name: Collect artifacts
+        run: |
+          set -euo pipefail
+          OUT=dist
+          mkdir -p "$OUT"
+          BUILD_DIR=.pio/build/sqs-th-i-esp32c3-sx1262
+          cp -v "$BUILD_DIR"/*.bin "$OUT"/ || true
+          cp -v "$BUILD_DIR"/*.factory.bin "$OUT"/ || true
+          # Some builds only generate firmware-*.bin; keep both patterns
+          ls -la "$OUT"
+          (cd "$OUT" && sha256sum * > SHA256SUMS.txt)
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*
+          generate_release_notes: true

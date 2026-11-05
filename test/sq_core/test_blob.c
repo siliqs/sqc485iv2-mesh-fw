@@ -15,7 +15,7 @@
 #include "modbus.h"
 #include "sq_test.h"
 
-#define BLOB_CAP 256
+#define BLOB_CAP 320 /* room for the 267-byte v5_map_overflow fixture (17 gw map rows) */
 
 /* Distinctive LoRaWAN credentials, so "the blob left them alone" is provable. */
 static void plant_lorawan(sq_config_t *c)
@@ -37,8 +37,8 @@ static void plant_lorawan(sq_config_t *c)
 void test_blob_encodes_defaults_byte_for_byte(void)
 {
     uint8_t expect[BLOB_CAP];
-    size_t expect_len = golden_load("v4_defaults", expect, sizeof(expect));
-    ASSERT_EQ(68, expect_len);
+    size_t expect_len = golden_load("v5_defaults", expect, sizeof(expect));
+    ASSERT_EQ(75, expect_len);
 
     sq_config_t c;
     config_set_defaults(&c);
@@ -56,9 +56,9 @@ void test_blob_encode_rejects_undersized_buffer(void)
     config_set_defaults(&c);
 
     uint8_t buf[BLOB_CAP];
-    ASSERT_EQ(0, config_to_blob(&c, buf, 67)); /* needs 68 */
+    ASSERT_EQ(0, config_to_blob(&c, buf, 74)); /* needs 75 */
     ASSERT_EQ(0, config_to_blob(&c, buf, 0));
-    ASSERT_EQ(68, config_to_blob(&c, buf, 68)); /* exact fit is fine */
+    ASSERT_EQ(75, config_to_blob(&c, buf, 75)); /* exact fit is fine */
 }
 
 void test_blob_encode_truncates_long_device_name(void)
@@ -108,6 +108,40 @@ void test_blob_flag_bits(void)
         ASSERT_EQ(cases[i].rs485_enabled, back.rs485_enabled);
         ASSERT_EQ(cases[i].tunnel, back.tunnel.enabled);
         ASSERT_EQ(cases[i].confirmed, back.tx.confirmed);
+    }
+}
+
+/* The gateway block has its own gw_flags byte (not the offset-3 flags above),
+   so its bit encoding gets the same scrutiny. */
+void test_blob_gateway_flag_bits(void)
+{
+    struct {
+        bool transparent;
+        bool aggregated;
+        uint8_t expect;
+    } cases[] = {
+        {false, false, 0x00}, {true, false, 0x01}, {false, true, 0x02}, {true, true, 0x03},
+    };
+
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        sq_config_t c;
+        config_set_defaults(&c);
+        c.gateway.transparent_enabled = cases[i].transparent;
+        c.gateway.aggregated_enabled = cases[i].aggregated;
+
+        uint8_t blob[BLOB_CAP];
+        size_t n = config_to_blob(&c, blob, sizeof(blob));
+        ASSERT_TRUE(n > 0);
+        /* gateway block starts right after the poll_count(1) + polls + tx(5) +
+           tunnel(6) sections; defaults have 3 polls, so gw_flags sits at
+           37 + 3*6 + 5 + 6 = 66. */
+        ASSERT_EQ(cases[i].expect, blob[66]);
+
+        sq_config_t back;
+        config_set_defaults(&back);
+        ASSERT_TRUE(config_from_blob(&back, blob, n));
+        ASSERT_EQ(cases[i].transparent, back.gateway.transparent_enabled);
+        ASSERT_EQ(cases[i].aggregated, back.gateway.aggregated_enabled);
     }
 }
 
@@ -221,6 +255,48 @@ void test_blob_decode_v4_tunnel(void)
     ASSERT_TRUE(c.tunnel.enabled); /* flags bit1 */
     ASSERT_EQ(0x11223344, c.tunnel.peer_node);
     ASSERT_EQ(50, c.tunnel.idle_gap_ms);
+
+    /* absent in v4 -> documented fallbacks */
+    ASSERT_FALSE(c.gateway.transparent_enabled);
+    ASSERT_FALSE(c.gateway.aggregated_enabled);
+    ASSERT_EQ(1, c.gateway.aggregated_slave_addr);
+    ASSERT_EQ(3600, c.gateway.staleness_threshold_s);
+    ASSERT_EQ(0, c.gateway.map_count);
+}
+
+void test_blob_decode_v5_gateway(void)
+{
+    uint8_t blob[BLOB_CAP];
+    size_t n = golden_load("v5", blob, sizeof(blob));
+    ASSERT_EQ(87, n);
+
+    sq_config_t c;
+    config_set_defaults(&c);
+    ASSERT_TRUE(config_from_blob(&c, blob, n));
+
+    ASSERT_STR_EQ("V5NODE", c.device_name);
+    ASSERT_EQ(1, c.poll_count);
+    ASSERT_EQ(0xAABBCCDD, c.tx.dest_node);
+    ASSERT_FALSE(c.tunnel.enabled); /* v5 fixture carries no tunnel block content */
+
+    ASSERT_TRUE(c.gateway.transparent_enabled);  /* gw_flags bit0 */
+    ASSERT_TRUE(c.gateway.aggregated_enabled);   /* gw_flags bit1 */
+    ASSERT_EQ(99, c.gateway.aggregated_slave_addr);
+    ASSERT_EQ(1800, c.gateway.staleness_threshold_s);
+
+    ASSERT_EQ(2, c.gateway.map_count);
+    ASSERT_EQ(0x81B8A03C, c.gateway.map[0].node_id);
+    ASSERT_EQ(1, c.gateway.map[0].src_slave);
+    ASSERT_EQ(3, c.gateway.map[0].src_func);
+    ASSERT_EQ(0, c.gateway.map[0].src_reg_start);
+    ASSERT_EQ(2, c.gateway.map[0].src_reg_count);
+    ASSERT_EQ(0, c.gateway.map[0].virt_reg_offset);
+    ASSERT_EQ(0x7D51BDB0, c.gateway.map[1].node_id);
+    ASSERT_EQ(5, c.gateway.map[1].src_slave);
+    ASSERT_EQ(4, c.gateway.map[1].src_func);
+    ASSERT_EQ(100, c.gateway.map[1].src_reg_start);
+    ASSERT_EQ(4, c.gateway.map[1].src_reg_count);
+    ASSERT_EQ(2, c.gateway.map[1].virt_reg_offset);
 }
 
 void test_blob_decode_at_maximum_size(void)
@@ -267,7 +343,7 @@ void test_blob_decode_preserves_lorawan_credentials(void)
 void test_blob_roundtrip_is_idempotent(void)
 {
     uint8_t first[BLOB_CAP];
-    size_t n = golden_load("v4", first, sizeof(first));
+    size_t n = golden_load("v5", first, sizeof(first));
     ASSERT_TRUE(n > 0);
 
     sq_config_t c;
@@ -322,7 +398,7 @@ void test_blob_rejects_unknown_versions(void)
     size_t n = golden_load("v4", blob, sizeof(blob));
     ASSERT_TRUE(n > 0);
 
-    const uint8_t bad_versions[] = {0, 1, 5, 0xFF};
+    const uint8_t bad_versions[] = {0, 1, 6, 0xFF};
     for (size_t i = 0; i < sizeof(bad_versions); i++) {
         blob[2] = bad_versions[i];
         assert_rejected_and_config_intact("unsupported version", blob, n);
@@ -370,4 +446,43 @@ void test_blob_rejects_poll_count_overflow(void)
     ASSERT_EQ(crc, modbus_crc16(blob, n - 2));
 
     assert_rejected_and_config_intact("poll_count > SQ_MAX_POLLS", blob, n);
+}
+
+/* Same shape as the poll_count overflow above, but for the gateway map: 17
+   entries, one past SQ_MAX_GW_MAP_ENTRIES, on an otherwise well-formed blob.
+   Nothing but the bounds check stands between this and a write past the end
+   of gateway.map[]. */
+void test_blob_rejects_gateway_map_count_overflow(void)
+{
+    uint8_t blob[BLOB_CAP];
+    size_t n = golden_load("v5_map_overflow", blob, sizeof(blob));
+    ASSERT_EQ(267, n); /* 37 + 1*6 + 5 + 6 + 7 + 17*12 + 2 */
+
+    uint16_t crc = (uint16_t)(blob[n - 2] | (blob[n - 1] << 8));
+    ASSERT_EQ(crc, modbus_crc16(blob, n - 2));
+
+    assert_rejected_and_config_intact("map_count > SQ_MAX_GW_MAP_ENTRIES", blob, n);
+}
+
+/* uplink_interval_s out of [SQ_MIN_UPLINK_INTERVAL_S, SQ_MAX_UPLINK_INTERVAL_S] on
+   blobs that are otherwise perfectly formed. 0 is the value that turns
+   ModbusModule's runOnce() into a zero-backoff busy loop (ModbusModule has no
+   clamp of its own — SensorTHModule's is a client-side floor, not a shared gate).
+   The upper-bound fixture stays well clear of the int32-ms overflow point
+   (~2,147,483 s) so this proves the bounds check itself fires, not the overflow. */
+void test_blob_rejects_interval_out_of_range(void)
+{
+    uint8_t blob[BLOB_CAP];
+
+    size_t n = golden_load("v4_interval_zero", blob, sizeof(blob));
+    ASSERT_TRUE(n > 0);
+    ASSERT_EQ(0u, (uint32_t)(blob[31] | (blob[32] << 8) | (blob[33] << 16) | (blob[34] << 24)));
+    assert_rejected_and_config_intact("uplink_interval_s == 0", blob, n);
+
+    n = golden_load("v4_interval_too_large", blob, sizeof(blob));
+    ASSERT_TRUE(n > 0);
+    uint32_t interval = (uint32_t)(blob[31] | (blob[32] << 8) | (blob[33] << 16) | (blob[34] << 24));
+    ASSERT_EQ(700000u, interval);
+    ASSERT_TRUE(interval > SQ_MAX_UPLINK_INTERVAL_S);
+    assert_rejected_and_config_intact("uplink_interval_s > SQ_MAX_UPLINK_INTERVAL_S", blob, n);
 }

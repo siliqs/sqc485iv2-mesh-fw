@@ -624,7 +624,7 @@ void NodeDB::installDefaultConfig(bool preserveKey = false)
 #else
     config.lora.modem_preset = meshtastic_Config_LoRaConfig_ModemPreset_LONG_FAST;
 #endif
-#ifdef SQC485IV2
+#if defined(SQC485IV2) || defined(SQS_TH_I)
     // Siliqs SQC485Iv2: ship the Taiwan DTS-certified radio profile out-of-box so the node
     // transmits inside the tested envelope on first boot (single fixed 922.5 MHz channel,
     // BW500/SF9/CR4:5). This is a factory *default* — a user can still change it via the app;
@@ -639,6 +639,12 @@ void NodeDB::installDefaultConfig(bool preserveKey = false)
     config.lora.coding_rate = 5;   // 4/5
     config.lora.override_frequency = 922.5f; // MHz, exact center (within TW 920-925)
     config.lora.tx_power = 22;               // dBm conducted (certified value; see Channels.cpp)
+#endif
+#ifdef SQS_TH_I
+    // SQS-TH-I is a power-save sensor leaf: default to CLIENT_MUTE so it does NOT relay
+    // for the mesh and is allowed to deep-sleep between reports (SensorTHModule::sleepMode
+    // gates sleep on this role). Set a router/relay role to keep a node awake instead.
+    config.device.role = meshtastic_Config_DeviceConfig_Role_CLIENT_MUTE;
 #endif
     config.lora.hop_limit = HOP_RELIABLE;
 #ifdef USERPREFS_CONFIG_LORA_IGNORE_MQTT
@@ -724,7 +730,7 @@ void NodeDB::installDefaultConfig(bool preserveKey = false)
     // default to bluetooth capability of platform as default
     config.bluetooth.enabled = true;
 #endif
-#ifdef SQC485IV2
+#if defined(SQC485IV2) || defined(SQS_TH_I)
     // Siliqs SQC485Iv2 factory default: ship with Bluetooth OFF. A fielded RS485 gateway
     // shouldn't advertise an open BLE reconfig surface out-of-box, and leaving BLE off on
     // first boot also sidesteps the weak-supply BLE-bring-up brownout. BLE stays COMPILED

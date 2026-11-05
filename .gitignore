@@ -56,3 +56,14 @@ CMakeLists.txt
 .python3
 .claude/scheduled_tasks.lock
 userPrefs.jsonc.mcp-session-bak
+QC_RELEASE_READINESS_*.pdf
+
+# AI agent handover notes: current-state snapshots for whichever agent picks
+# up next, not permanent project history. Untracked 2026-08-10 (git rm --cached).
+/CLAUDE.md
+/log.md
+test/hil/CLAUDE.md
+
+# Human QC test report reference copy (downloaded from Google Docs for local
+# study, not the canonical source; keep it out of history). Added 2026-08-14.
+test/hil/reports/human-qc/

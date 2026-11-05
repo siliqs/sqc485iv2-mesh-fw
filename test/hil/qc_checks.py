@@ -23,6 +23,7 @@ HERE = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
 import sq_protocol as sq  # noqa: E402
+from modbus_master import ModbusMaster  # noqa: E402
 from modbus_slave import ModbusSlave, crc16  # noqa: E402
 from sq_device import Device, DeviceError  # noqa: E402
 
@@ -707,6 +708,184 @@ def check_tunnel(dev: Device, rep, rs485_port: str, peer_port: str | None = None
             )
     finally:
         peer_dev.close()
+
+
+def check_gateway_reply(dev: Device, rep, rs485_port: str, peer_port: str | None = None):
+    """SLAVE-01..07 — gateway Modbus-slave passive reply (config v5, T3.5 timing).
+
+    SLAVE-01..04 only need an empty gateway cache — dispatch, address matching
+    and function-code validation are all provable without any mesh traffic, the
+    same way BUS-*/POLL-* only need the DUT's own RS485 loop. SLAVE-05..07 need
+    a *real* cached reading, and the only honest way to get one is to have an
+    actual second mesh node uplink it: ModbusModule::handleReceived() keys the
+    cache on `mp.from`, so a value has to arrive as a genuine received packet,
+    not something poked into the DUT's own config. A second Meshtastic node
+    (--peer) is exactly what test/hil already uses for this — no RS485 wiring
+    needed on the peer's side, it just has to transmit one raw-forward-shaped
+    frame from its own identity.
+
+    gw_store is a runtime cache independent of the config blob — pushing a new
+    config does NOT clear it. Two consequences, both found on the bench while
+    writing this check:
+
+    1. A stale entry from an earlier run answers a "should be empty" query
+       with 0x0B instead of 0x02, because it was already there before this
+       run seeded anything. Fixed by giving MY_SLAVE and EMPTY_SLAVE their own
+       never-reused numbers rather than small constants any other check (or a
+       previous run of this one) might have touched.
+    2. gw_store_put() walks gw->map[] IN ORDER and slices the incoming raw
+       bytes positionally — frame_len = 2 + 2*row.src_reg_count bytes per
+       row, from a shared cursor — it does not identify a row by re-reading
+       slave/func out of the bytes, only by position. A short synthetic
+       payload aimed at "the second row" silently lands in the FIRST row
+       instead (and the second write gets truncated away, per
+       poll_collect_raw()'s own boundary rule) unless it carries a full
+       frame for every row ahead of the one under test. Simplest fix: put
+       the row this check actually seeds FIRST in the map, so a payload
+       sized for exactly that one row lands where intended and EMPTY_SLAVE's
+       row (second, never reached by a payload this short) is never touched.
+    """
+    rep.section("gateway Modbus-slave reply")
+
+    peer_dev: Device | None = None
+    peer_node_id = 0x00000001  # placeholder; irrelevant to SLAVE-01..04's dispatch
+    if peer_port:
+        peer_dev = Device(peer_port)
+        peer_dev.connect()
+        peer_node_id = peer_dev.node_num
+
+    try:
+        # Map order matters (see the gw_store_put note above): MY_SLAVE is
+        # listed first so a single-frame seed payload lands in its slot, not
+        # EMPTY_SLAVE's.
+        MY_SLAVE, MY_VIRT = 25, 10  # seeded further down, for SLAVE-05..07
+        EMPTY_SLAVE, EMPTY_VIRT = 26, 30  # never fed -- stays a genuine cache-miss
+        AGG_SLAVE, OTHER_SLAVE, STALE_S = 20, 99, 2
+        cfg = sq.Config(
+            version=5,
+            name="qc-gw",
+            polls=[],
+            rs485_enabled=False,
+            uplink_interval_s=3600,
+            deep_sleep=False,
+            gw_flags=sq.FLAG_GW_TRANSPARENT | sq.FLAG_GW_AGGREGATED,
+            gw_agg_slave=AGG_SLAVE,
+            gw_staleness_s=STALE_S,
+            gw_map=[
+                sq.GwMapEntry(peer_node_id, MY_SLAVE, 3, 0, 2, MY_VIRT),
+                sq.GwMapEntry(peer_node_id, EMPTY_SLAVE, 3, 0, 2, EMPTY_VIRT),
+            ],
+        )
+        dev.quiesce()
+        if not rep.check(
+            dev.apply_config(cfg.to_blob()) == 0,
+            "v5 gateway config (transparent + aggregated, two map rows) accepted",
+            "the node refused a v5 gateway config — nothing below can run",
+        ):
+            return
+        time.sleep(0.3)
+
+        with ModbusMaster(
+            rs485_port, baud=cfg.baud, parity=cfg.parity, stop_bits=cfg.stop_bits, timeout_s=1.5
+        ) as master:
+            rep.requirement("SLAVE-01")
+            r = master.query(slave=EMPTY_SLAVE, function=3, reg_start=0, reg_count=2)
+            rep.check(
+                r is not None and r.is_exception and r.exception_code == 0x02,
+                "transparent address with an empty cache replies illegal-address (0x02)",
+                f"got {r!r}, expected a 0x02 exception — a cache-miss must not go "
+                "unanswered or hand back stale-looking data",
+            )
+
+            rep.requirement("SLAVE-02")
+            r = master.query(slave=AGG_SLAVE, function=3, reg_start=EMPTY_VIRT, reg_count=2)
+            rep.check(
+                r is not None and r.is_exception and r.exception_code == 0x02,
+                "aggregated address with an empty cache replies illegal-address (0x02)",
+                f"got {r!r}, expected a 0x02 exception",
+            )
+
+            rep.requirement("SLAVE-03")
+            r = master.query(slave=OTHER_SLAVE, function=3, reg_start=0, reg_count=2)
+            rep.check(
+                r is None,
+                "an address that is neither ours nor the aggregated one stays silent",
+                f"got a reply ({r!r}) for an address this gateway does not own — "
+                "it must stay silent, the same way a real slave would",
+            )
+
+            rep.requirement("SLAVE-04")
+            r = master.query(slave=EMPTY_SLAVE, function=6, reg_start=0, reg_count=2)
+            rep.check(
+                r is not None and r.is_exception and r.exception_code == 0x01,
+                "our address with an unsupported function code replies illegal-function (0x01)",
+                f"got {r!r}, expected a 0x01 exception",
+            )
+
+            if not peer_dev:
+                for rid in ("SLAVE-05", "SLAVE-06", "SLAVE-07"):
+                    rep.skip(
+                        rid,
+                        "needs a second node (--peer) to feed the gateway's cache "
+                        "with a real mesh reading — nothing can populate gw_store "
+                        "without one",
+                    )
+                rep.info(
+                    "skipped SLAVE-05..07 — pass --peer <port> with a second "
+                    "Meshtastic node to run them"
+                )
+                return
+
+            # Seed the cache: send one raw-forward-shaped frame from the peer's own
+            # identity, exactly what poll_collect_raw() would have produced for
+            # this map row (slave, func, then reg_count*2 big-endian data bytes).
+            # gw_store keys on mp.from, so this has to be a genuine received
+            # packet from the peer's own node id -- nothing short of that reaches
+            # the code path under test.
+            #
+            # Broadcast, not a direct unicast to the DUT: a unicast DM never
+            # arrived in testing, almost certainly the same PKI/NodeDB gap
+            # documented in test/hil/CLAUDE.md §4.6 for FEAT-02 (a node whose
+            # public key the peer hasn't -- or no longer -- has cached). This
+            # is also simply how a real sensor node uplinks by default (see
+            # the "tx": {"destination": "broadcast"} in its own cfg blob spec),
+            # so it is the more representative choice, not just the workaround.
+            raw = bytes([MY_SLAVE, 3]) + (0x1234).to_bytes(2, "big") + (0x5678).to_bytes(2, "big")
+            peer_dev.send(raw, destination="^all")
+            time.sleep(2.5)  # a broadcast measured ~0.7s end-to-end on the bench; margin for slower runs
+
+            rep.requirement("SLAVE-05")
+            r = master.query(slave=MY_SLAVE, function=3, reg_start=0, reg_count=2)
+            got = r.registers(2) if r and not r.is_exception else None
+            rep.check(
+                got == [0x1234, 0x5678],
+                f"transparent address answers with the peer's live cached reading ({got})",
+                f"got {r!r}, expected data [0x1234, 0x5678] — the reading the peer "
+                "just uplinked over mesh",
+            )
+
+            rep.requirement("SLAVE-06")
+            r = master.query(slave=AGG_SLAVE, function=3, reg_start=MY_VIRT, reg_count=2)
+            got = r.registers(2) if r and not r.is_exception else None
+            rep.check(
+                got == [0x1234, 0x5678],
+                f"aggregated address answers the same cached reading at its virtual offset ({got})",
+                f"got {r!r}, expected data [0x1234, 0x5678] at virtual offset {MY_VIRT}",
+            )
+
+            rep.requirement("SLAVE-07")
+            time.sleep(STALE_S + 1.5)  # let the cached entry age past gw_staleness_s
+            r = master.query(slave=MY_SLAVE, function=3, reg_start=0, reg_count=2)
+            rep.check(
+                r is not None and r.is_exception and r.exception_code == 0x0B,
+                "a reading older than the staleness threshold replies "
+                "gateway-target-failed-to-respond (0x0B)",
+                f"got {r!r}, expected a 0x0B exception — an old cached value must "
+                "not be handed out as if it were fresh",
+            )
+    finally:
+        if peer_dev:
+            peer_dev.close()
 
 
 def check_deep_sleep(dev: Device, rep, interval_s: int = 30):

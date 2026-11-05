@@ -89,6 +89,12 @@ void config_set_defaults(sq_config_t *c)
     c->tunnel.enabled     = false;
     c->tunnel.peer_node   = 0;
     c->tunnel.idle_gap_ms = 20;   /* ~end-of-frame silence on the local bus */
+
+    c->gateway.transparent_enabled    = false;
+    c->gateway.aggregated_enabled     = false;
+    c->gateway.aggregated_slave_addr  = 1;
+    c->gateway.staleness_threshold_s  = 3600; /* 1h: stale beyond a plausible missed-report */
+    c->gateway.map_count              = 0;
 }
 
 bool config_load(sq_config_t *c)
@@ -125,8 +131,11 @@ static uint32_t get_u32(const uint8_t *p) { return (uint32_t)p[0] | ((uint32_t)p
 size_t config_to_blob(const sq_config_t *c, uint8_t *out, size_t cap)
 {
     /* v3 appends tx routing (dest_node u32 + channel u8 = 5 bytes); v4 then appends
-       the tunnel block (peer_node u32 + idle_gap u16 = 6 bytes) after the polls. */
-    size_t need = SQ_BLOB_HDR + (size_t)c->poll_count * 6 + 5 + 6 + 2;
+       the tunnel block (peer_node u32 + idle_gap u16 = 6 bytes); v5 then appends the
+       gateway block (gw_flags(1) agg_slave_addr(1) staleness_s(4) map_count(1) +
+       map_count * 12) after the polls. */
+    size_t gw_need = 7 + (size_t)c->gateway.map_count * 12;
+    size_t need = SQ_BLOB_HDR + (size_t)c->poll_count * 6 + 5 + 6 + gw_need + 2;
     if (need > cap) return 0;
 
     out[0] = 'S'; out[1] = 'Q'; out[2] = SQ_CONFIG_VERSION & 0xFF;
@@ -157,6 +166,21 @@ size_t config_to_blob(const sq_config_t *c, uint8_t *out, size_t cap)
     uint8_t *tn = t + 5;                                          /* tunnel block (v4) */
     put_u32(tn, c->tunnel.peer_node);
     put_u16(tn + 4, c->tunnel.idle_gap_ms);
+    uint8_t *g = tn + 6;                                          /* gateway block (v5) */
+    g[0] = (c->gateway.transparent_enabled ? SQ_FLAG_GW_TRANSPARENT : 0)
+         | (c->gateway.aggregated_enabled  ? SQ_FLAG_GW_AGGREGATED : 0);
+    g[1] = c->gateway.aggregated_slave_addr;
+    put_u32(g + 2, c->gateway.staleness_threshold_s);
+    g[6] = c->gateway.map_count;
+    for (uint8_t i = 0; i < c->gateway.map_count; i++) {
+        uint8_t *m = g + 7 + i * 12;
+        const sq_gw_map_entry_t *e = &c->gateway.map[i];
+        put_u32(m, e->node_id);
+        m[4] = e->src_slave; m[5] = e->src_func;
+        put_u16(m + 6, e->src_reg_start);
+        put_u16(m + 8, e->src_reg_count);
+        put_u16(m + 10, e->virt_reg_offset);
+    }
     put_u16(out + need - 2, modbus_crc16(out, need - 2));
     return need;
 }
@@ -165,14 +189,26 @@ bool config_from_blob(sq_config_t *c, const uint8_t *b, size_t len)
 {
     if (len < SQ_BLOB_HDR + 2) return false;
     uint8_t ver = b[2];
-    if (b[0] != 'S' || b[1] != 'Q' || (ver != 2 && ver != 3 && ver != 4)) return false;
+    if (b[0] != 'S' || b[1] != 'Q' || (ver != 2 && ver != 3 && ver != 4 && ver != 5)) return false;
 
     uint8_t pc = b[36];
     if (pc > SQ_MAX_POLLS) return false;
-    size_t extra = (ver >= 3 ? 5 : 0) + (ver >= 4 ? 6 : 0);   /* v3 tx routing + v4 tunnel */
+    /* v5 gateway block size depends on its own map_count, which lives inside the
+       block — walk up to it before knowing the full length. */
+    size_t pre_gw = SQ_BLOB_HDR + (size_t)pc * 6 + (ver >= 3 ? 5 : 0) + (ver >= 4 ? 6 : 0);
+    uint8_t gc = 0;
+    if (ver >= 5) {
+        if (len < pre_gw + 7 + 2) return false;
+        gc = b[pre_gw + 6];
+        if (gc > SQ_MAX_GW_MAP_ENTRIES) return false;
+    }
+    size_t extra = (ver >= 3 ? 5 : 0) + (ver >= 4 ? 6 : 0) + (ver >= 5 ? 7 + (size_t)gc * 12 : 0);
     size_t need = SQ_BLOB_HDR + (size_t)pc * 6 + extra + 2;
     if (len != need) return false;
     if (get_u16(b + need - 2) != modbus_crc16(b, need - 2)) return false;
+
+    uint32_t interval = get_u32(b + 31);
+    if (interval < SQ_MIN_UPLINK_INTERVAL_S || interval > SQ_MAX_UPLINK_INTERVAL_S) return false;
 
     /* preserve c->lorawan; overwrite the deployment fields */
     c->rs485_enabled = (b[3] & SQ_FLAG_RS485_OFF) ? false : true;
@@ -186,7 +222,7 @@ bool config_from_blob(sq_config_t *c, const uint8_t *b, size_t len)
     c->modbus.response_timeout_ms = get_u16(b + 26);
     c->modbus.retries             = b[28];
     c->modbus.poll_gap_ms         = get_u16(b + 29);
-    c->power.uplink_interval_s    = get_u32(b + 31);
+    c->power.uplink_interval_s    = interval;
     c->power.deep_sleep           = b[35] ? true : false;
     c->poll_count                 = pc;
     for (uint8_t i = 0; i < pc; i++) {
@@ -217,6 +253,30 @@ bool config_from_blob(sq_config_t *c, const uint8_t *b, size_t len)
         c->tunnel.enabled     = false;   /* v2/v3 blob: no tunnel */
         c->tunnel.peer_node   = 0;
         c->tunnel.idle_gap_ms = 20;
+    }
+    if (ver >= 5) {
+        const uint8_t *g = b + pre_gw;
+        c->gateway.transparent_enabled   = (g[0] & SQ_FLAG_GW_TRANSPARENT) ? true : false;
+        c->gateway.aggregated_enabled    = (g[0] & SQ_FLAG_GW_AGGREGATED) ? true : false;
+        c->gateway.aggregated_slave_addr = g[1];
+        c->gateway.staleness_threshold_s = get_u32(g + 2);
+        c->gateway.map_count             = gc;
+        for (uint8_t i = 0; i < gc; i++) {
+            const uint8_t *m = g + 7 + i * 12;
+            sq_gw_map_entry_t *e = &c->gateway.map[i];
+            e->node_id         = get_u32(m);
+            e->src_slave       = m[4];
+            e->src_func        = m[5];
+            e->src_reg_start   = get_u16(m + 6);
+            e->src_reg_count   = get_u16(m + 8);
+            e->virt_reg_offset = get_u16(m + 10);
+        }
+    } else {
+        c->gateway.transparent_enabled   = false;  /* v2/v3/v4 blob: no gateway reply */
+        c->gateway.aggregated_enabled    = false;
+        c->gateway.aggregated_slave_addr = 1;
+        c->gateway.staleness_threshold_s = 3600;
+        c->gateway.map_count             = 0;
     }
     c->schema_version = SQ_CONFIG_VERSION;
     return true;

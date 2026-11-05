@@ -24,6 +24,8 @@ AREAS = {
     "mode": "運作模式",
     "feature": "已宣告但原本沒被驗證的功能",
     "boot": "開機",
+    "gateway": "閘道 Modbus 從站被動回覆(config v5)",
+    "sqs-th-i": "SQS-TH-I 專屬",
 }
 
 NEEDS = {
@@ -46,7 +48,7 @@ TEXT: dict[str, dict[str, str]] = {
         "why": "proto 2 才會在韌體版本字串後面附上 product_id;回 proto 1 的話,配置器只能猜自己在跟哪一個產品講話",
     },
     "ID-03": {
-        "title": "宣告全部六個 feature bit(0x3F)",
+        "title": "宣告全部七個 feature bit(0xBF)",
         "why": "配置器的 UI 是依這些 bit 決定開放哪些功能;宣告了一個 build 其實沒有的功能,比不宣告更糟",
     },
     "ID-04": {
@@ -185,9 +187,63 @@ TEXT: dict[str, dict[str, str]] = {
         "title": "duty-cycle 深度睡眠會依排程入睡並醒來",
         "why": "它被宣告為 feature bit 0x10,卻從來沒有任何檢查用過;醒不來的節點在現場等於故障,睡不著的節點等於電池耗盡",
     },
+    # ── 閘道 Modbus 從站被動回覆(config v5) ──────────────────────────────────
+    "SLAVE-01": {
+        "title": "透明位址在快取是空的時候回 illegal-address(0x02)",
+        "why": "快取沒命中卻不回覆,或回一個看起來像資料的東西，都會讓外部 master 誤判",
+    },
+    "SLAVE-02": {
+        "title": "聚合位址在快取是空的時候回 illegal-address(0x02)",
+        "why": "跟 SLAVE-01 是同一個賭注，只是走聚合定址那條路徑",
+    },
+    "SLAVE-03": {
+        "title": "不屬於自己（也不是聚合位址）的位址完全靜默",
+        "why": "回覆一個不是自己的位址，行為就跟真正的 slave 不一致，也可能干擾匯流排上其他裝置",
+    },
+    "SLAVE-04": {
+        "title": "位址是自己的、但 func code 不支援時回 illegal-function（0x01）",
+        "why": "位址對但 func 錯，跟位址不對是兩種不同的現場故障，要能分辨",
+    },
+    "SLAVE-05": {
+        "title": "透明位址回覆的是 peer 剛上傳的真實 mesh 讀值",
+        "why": "SLAVE-01..04 只驗證了空快取的行為；這條才是真的驗證了整條鏈路——peer 輪詢 →上傳 mesh → 閘道快取 → 外部 master 查得到",
+    },
+    "SLAVE-06": {
+        "title": "聚合位址在自己的虛擬位移回覆同一筆快取讀值",
+        "why": "聚合模式的定址解析（虛擬位移 → 對照表 → 快取 key）是跟透明模式完全不同的程式碼路徑，必須分開驗證",
+    },
+    "SLAVE-07": {
+        "title": "超過過期門檻的快取讀值回 gateway-target-failed-to-respond（0x0B）",
+        "why": "把過期的舊值當成新資料回給外部 master，比完全不回覆還糟——會被誤判成即時讀值",
+    },
     # ── 開機 ──────────────────────────────────────────────────────────────────
     "BOOT-01": {
         "title": "板子能從連續多次重置中回復",
         "why": "這個硬體的 3.3V 沒有 bulk decoupling,射頻上電的電流階躍會把電軌壓到 C3 的 brownout 門檻以下;main.cpp 裡那段緩解是 load-bearing 的,而開機迴圈正是這塊板子的歷史故障模式",
+    },
+    # ── SQS-TH-I 專屬 ────────────────────────────────────────────────────────
+    "SENSOR-ID-01": {
+        "title": "回報的 product id 是 SQS-TH-I",
+        "why": "配置器整套自動偵測(隱藏 Modbus UI、只顯示回報間隔)都是靠這個字串判斷",
+    },
+    "SENSOR-ID-02": {
+        "title": "回報的韌體版本與這份 checkout 的 SQ_FW_VERSION 相符",
+        "why": "確認板上跑的就是要發的這一版,不是上週隨手燒進去的版本——跟 SQC485Iv2 的 ID-04 是同一件事,因為 ID-04 綁定 product='sqc485iv2',對這塊板子不會執行,所以另外列一條",
+    },
+    "SENSOR-CAP-01": {
+        "title": "只宣告感測器功能集,不多不少",
+        "why": "SQS-TH-I 的 SQ_FEATURES 是 POLL_NOW|DEEP_SLEEP|GET_CONFIG|SENSOR(0x78)——不該宣告 TUNNEL/BLE_POWER/RS485_TERM,這個產品線根本沒有這些功能。配置器單靠 SENSOR 這個 bit 決定要不要隱藏 Modbus UI,功能集宣告錯了,自動偵測會悄悄壞掉",
+    },
+    "SENSOR-READ-01": {
+        "title": "內建的 HDC1080 讀出合理的數值",
+        "why": "PortNum 258(Siliqs 健康封包)溫濕度落在現場合理範圍、且 sensor-NACK flag 清空,才分得清楚是「感測器真的在運作」還是「感測器有回應但讀值是垃圾」",
+    },
+    "SENSOR-READ-02": {
+        "title": "有送出標準 Meshtastic EnvironmentMetrics",
+        "why": "PortNum 67 是讓這顆節點的讀值能被整個 Meshtastic app/MQTT 生態看到的關鍵,不只是 Siliqs 自己那個 port 258 解碼器;這個如果悄悄壞掉,Siliqs 這側完全不會發現",
+    },
+    "SENSOR-SLEEP-01": {
+        "title": "duty-cycle 深度睡眠會依排程入睡並醒來",
+        "why": "跟 SQC485Iv2 的 FEAT-03 是同一個賭注:醒不來的省電節點在現場等於故障,睡不著的等於電池耗盡——這條之前從來沒被驗證過",
     },
 }

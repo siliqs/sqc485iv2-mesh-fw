@@ -1,5 +1,5 @@
 """
-requirements.py — the QC acceptance checklist for the SQC485Iv2.
+requirements.py — the QC acceptance checklist for the SQC485Iv2 and SQS-TH-I.
 
 This file is the *list*, not the tests. It enumerates everything a release build
 has to be shown to do, so the run can end with a per-requirement verdict instead
@@ -13,7 +13,7 @@ check attached comes out as NOT RUN and fails the gate, so coverage can only be
 dropped on purpose (--allow-gaps), never by accident.
 
 The canonical example, and the reason this exists: the identity section asserts
-the node advertises all six feature bits (0x3F), while three of those features
+the node advertises all seven feature bits (0xBF), while three of those features
 — the RS485↔RS485 tunnel, the BLE TX power command, and the duty-cycle deep
 sleep — had no check at all. The gate was confirming the *advertisement* and
 never the *feature*.
@@ -30,6 +30,18 @@ following poll" is.
     "role"    changes the Meshtastic device role (restored afterwards)
     "factory" the board must be running a SHIPPING image (--factory), not a CI
               build -- a CI artifact has no factory channel by construction
+
+`product` gates a requirement on WHICH board is on the bench -- SQC485Iv2 and
+SQS-TH-I share the SQ protocol and config-blob contract, but have almost
+nothing else in common (one has RS485 and a tunnel, the other a built-in
+sensor and no RS485 at all). sq_hil.py detects which is connected
+(sq_device.detect_product) and skips every requirement whose `product`
+doesn't match, the same way --skip-rs485 skips the "rs485" needs group.
+    "sqc485iv2"  the default -- every requirement written before 2026-07-31
+    "sqs-th-i"   SQS-TH-I only (built-in HDC1080, duty-cycle sensor leaf)
+    "shared"     both -- currently just the TW DTS radio profile (RF-01/02),
+                 which is identical firmware code (#if defined(SQC485IV2) ||
+                 defined(SQS_TH_I)) for both products
 """
 
 from __future__ import annotations
@@ -49,6 +61,7 @@ class Requirement:
     title: str
     why: str
     needs: str = ""
+    product: str = "sqc485iv2"
 
 
 REQUIREMENTS: list[Requirement] = [
@@ -64,7 +77,7 @@ REQUIREMENTS: list[Requirement] = [
         "reply leaves the configurator guessing which product it is talking to",
     ),
     Requirement(
-        "ID-03", "identity", "advertises all six feature bits (0x3F)",
+        "ID-03", "identity", "advertises all seven feature bits (0xBF)",
         "the configurator gates its UI on these bits; advertising a feature the "
         "build does not have is worse than not advertising it",
     ),
@@ -78,11 +91,13 @@ REQUIREMENTS: list[Requirement] = [
         "RF-01", "radio", "running LoRa config is inside the TW DTS envelope",
         "922.5 MHz / BW500 / SF9 / CR4:5 / TW / 22 dBm is the type-approved "
         "profile; shipping outside it is a regulatory defect, not a preference",
+        product="shared",
     ),
     Requirement(
         "RF-02", "radio", "Bluetooth is off by default",
-        "a fielded RS485 gateway must not advertise an open BLE reconfiguration "
-        "surface out of the box",
+        "a fielded node must not advertise an open BLE reconfiguration surface "
+        "out of the box, regardless of which product line it is",
+        product="shared",
     ),
     Requirement(
         "RF-03", "radio", "a shipping image carries a factory channel with a private PSK",
@@ -263,6 +278,52 @@ REQUIREMENTS: list[Requirement] = [
         "battery",
         needs="role",
     ),
+    # ── gateway Modbus-slave passive reply (config v5) ──────────────────────
+    Requirement(
+        "SLAVE-01", "gateway", "transparent address with an empty cache replies illegal-address (0x02)",
+        "a cache-miss that goes unanswered, or that hands back something that "
+        "looks like a reading, both mislead the external master",
+        needs="rs485",
+    ),
+    Requirement(
+        "SLAVE-02", "gateway", "aggregated address with an empty cache replies illegal-address (0x02)",
+        "same stakes as SLAVE-01, exercised through the aggregated addressing "
+        "path instead of the transparent one",
+        needs="rs485",
+    ),
+    Requirement(
+        "SLAVE-03", "gateway", "an address that is neither ours nor the aggregated one stays silent",
+        "answering for an address that is not ours diverges from how a real "
+        "slave behaves, and can interfere with other devices on the bus",
+        needs="rs485",
+    ),
+    Requirement(
+        "SLAVE-04", "gateway", "our address with an unsupported function code replies illegal-function (0x01)",
+        "a wrong address and a wrong function code are two different field "
+        "faults and must be distinguishable from the reply alone",
+        needs="rs485",
+    ),
+    Requirement(
+        "SLAVE-05", "gateway", "transparent address answers with a peer's live cached reading",
+        "SLAVE-01..04 only prove the empty-cache behaviour; this is the one "
+        "that proves the whole chain — a peer polls, uplinks over mesh, the "
+        "gateway caches it, and an external master can read it back",
+        needs="peer",
+    ),
+    Requirement(
+        "SLAVE-06", "gateway", "aggregated address answers the same cached reading at its virtual offset",
+        "aggregated addressing (virtual offset -> map row -> cache key) is a "
+        "different code path from transparent addressing and has to be "
+        "verified on its own",
+        needs="peer",
+    ),
+    Requirement(
+        "SLAVE-07", "gateway", "a reading older than the staleness threshold replies gateway-target-failed-to-respond (0x0B)",
+        "handing an external master a stale value as if it were fresh is "
+        "worse than not answering at all -- it can be mistaken for a live "
+        "reading",
+        needs="peer",
+    ),
     # ── platform ─────────────────────────────────────────────────────────────
     Requirement(
         "BOOT-01", "boot", "the board comes back from repeated resets",
@@ -270,6 +331,55 @@ REQUIREMENTS: list[Requirement] = [
         "sags the rail past the C3 brownout threshold; the mitigation in main.cpp is "
         "load-bearing and a boot loop is this board's historical failure mode",
         needs="reboot",
+    ),
+    # ── SQS-TH-I ─────────────────────────────────────────────────────────────
+    # First requirements for the second product line, added 2026-07-31. Coverage
+    # is intentionally partial on this first pass -- see QC_RELEASE_READINESS_
+    # 2026-07-31.md for what is and is not covered yet (notably: no battery/
+    # charging-flag check, since vbat/soc are still M4 placeholders in the
+    # firmware itself; nothing to verify until that lands).
+    Requirement(
+        "SENSOR-ID-01", "sqs-th-i", "reports product id SQS-TH-I",
+        "the configurator's whole auto-detect flow (hide Modbus UI, show only "
+        "report interval) keys off this string",
+        product="sqs-th-i",
+    ),
+    Requirement(
+        "SENSOR-ID-02", "sqs-th-i", "reported firmware matches SQ_FW_VERSION in this checkout",
+        "the single check that the board is running the build being released, and "
+        "not whatever was flashed last week -- same requirement as SQC485Iv2's "
+        "ID-04, restated because ID-04 itself is product='sqc485iv2' and would "
+        "otherwise never run against this board",
+        product="sqs-th-i",
+    ),
+    Requirement(
+        "SENSOR-CAP-01", "sqs-th-i", "advertises the sensor feature set and nothing else",
+        "SQ_FEATURES for SQS-TH-I is POLL_NOW|DEEP_SLEEP|GET_CONFIG|SENSOR (0x78) "
+        "-- it must not advertise TUNNEL/BLE_POWER/RS485_TERM, none of which this "
+        "product has; the configurator hides the Modbus UI based on the SENSOR "
+        "bit alone, so a wrong feature set breaks that auto-detect silently",
+        product="sqs-th-i",
+    ),
+    Requirement(
+        "SENSOR-READ-01", "sqs-th-i", "the on-board HDC1080 produces a plausible reading",
+        "PortNum 258 (Siliqs health) with a bench-plausible temperature/humidity "
+        "range and the sensor-NACK flag clear is the difference between 'the "
+        "sensor works' and 'the sensor is present and returning garbage'",
+        product="sqs-th-i",
+    ),
+    Requirement(
+        "SENSOR-READ-02", "sqs-th-i", "emits standard Meshtastic EnvironmentMetrics",
+        "PortNum 67 is what makes this node's readings visible to the whole "
+        "Meshtastic app/MQTT ecosystem, not just the Siliqs-specific decoder on "
+        "port 258 -- losing this silently would not break anything Siliqs-side",
+        product="sqs-th-i",
+    ),
+    Requirement(
+        "SENSOR-SLEEP-01", "sqs-th-i", "duty-cycle deep sleep sleeps and wakes on schedule",
+        "a power-save leaf that fails to wake is a dead node in the field, and "
+        "one that fails to sleep is a flat battery -- same stakes as SQC485Iv2's "
+        "FEAT-03, unexercised here until now",
+        needs="role", product="sqs-th-i",
     ),
 ]
 

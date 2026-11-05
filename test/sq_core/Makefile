@@ -15,9 +15,9 @@ BIN    := $(BUILD)/sq_core_tests
 CC     ?= cc
 SAN    ?= 1
 
-CORE_SRC := $(CORE)/config.c $(CORE)/modbus.c $(CORE)/poll.c $(CORE)/sqcmd.c
+CORE_SRC := $(CORE)/config.c $(CORE)/modbus.c $(CORE)/poll.c $(CORE)/sqcmd.c $(CORE)/gw_store.c $(CORE)/modbus_slave.c
 MOCK_SRC := mock/mock_board.c mock/mock_board_check.c mock/mock_serial.c mock/mock_store.c mock/mock_time.c
-TEST_SRC := golden.c test_crc.c test_config.c test_blob.c test_modbus.c test_poll.c test_sqcmd.c main.c
+TEST_SRC := golden.c test_crc.c test_config.c test_blob.c test_modbus.c test_poll.c test_sqcmd.c test_gw_store.c test_modbus_slave.c main.c
 SRC      := $(CORE_SRC) $(MOCK_SRC) $(TEST_SRC)
 
 CFLAGS := -std=c11 -g -O1 -Wall -Wextra -Wpedantic -Wshadow \

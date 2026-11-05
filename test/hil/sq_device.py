@@ -26,9 +26,13 @@ class DeviceError(RuntimeError):
 
 
 class Device:
-    def __init__(self, port: str, connect_timeout: float = 20.0):
+    def __init__(self, port: str, connect_timeout: float = 20.0, portnum: int | None = None):
         self.port = port
         self.connect_timeout = connect_timeout
+        # SQC485Iv2 answers on 256 (SILIQS_MODBUS_PORTNUM), SQS-TH-I on 258
+        # (SILIQS_SENSOR_PORTNUM) -- same command set, different port per product.
+        # Defaults to 256 so every existing SQC485Iv2 call site is unaffected.
+        self.portnum = portnum if portnum is not None else sq.PORTNUM
         self.iface = None
         self.node_num = None
         self._rx: queue.Queue = queue.Queue()
@@ -153,7 +157,13 @@ class Device:
         if not packet:
             return
         decoded = packet.get("decoded") or {}
-        if decoded.get("portnum") not in (sq.PORTNUM, "PRIVATE_APP", str(sq.PORTNUM)):
+        # 256 is a NAMED portnum (meshtastic_PortNum_PRIVATE_APP), so some library
+        # versions report it as the string "PRIVATE_APP" instead of the int. 258 is
+        # unnamed and always arrives as a plain int — no string alias to accept.
+        accepted = (self.portnum, str(self.portnum))
+        if self.portnum == sq.PORTNUM:
+            accepted += ("PRIVATE_APP",)
+        if decoded.get("portnum") not in accepted:
             return
         self._rx.put((time.monotonic(), decoded.get("payload", b"")))
         for fn in self._listeners:
@@ -176,7 +186,7 @@ class Device:
         self.iface.sendData(
             payload,
             destinationId=self.node_num if destination is None else destination,
-            portNum=sq.PORTNUM,
+            portNum=self.portnum,
             wantAck=False,
             wantResponse=False,
         )
@@ -350,3 +360,86 @@ class Device:
     @property
     def firmware_version(self) -> str:
         return getattr(self.iface.metadata, "firmware_version", "?")
+
+
+def detect_product(port: str, timeout: float = 8.0) -> tuple[str, int]:
+    """Probe which product is on `port` and which portnum it answers SQ commands on.
+
+    SQC485Iv2 answers on 256, SQS-TH-I on 258 -- and there is no way to tell which
+    from the outside before asking. Sends 'SQV?' on BOTH ports at once rather than
+    trying one, timing out, then trying the other: a serial reconnect per guess
+    costs several seconds each way. The product ID comes from the reply's own
+    content (ASCII, portnum-independent), not from which portnum the library
+    reports the packet on -- 256 is a NAMED portnum and some meshtastic library
+    versions report it as the string "PRIVATE_APP" instead of the int, which is
+    one ambiguity fewer to resolve here.
+
+    The reply broadcasts (`to=0xffffffff`), it does not come back as a unicast
+    to the query's sender -- confirmed on hardware 2026-07-31. On a bench with
+    more than one Siliqs board on the same mesh channel, a NEIGHBOUR's own SQV
+    reply is audible too, and worse: it can arrive from the SerialInterface's
+    own connect-time replay of that node's cached packet history, not just
+    live RF -- a neighbour's reply from an EARLIER session is still sitting in
+    the log. Filtering on `packet["from"] == node_num` is what actually
+    disambiguates it; portnum and payload content are not enough on their own.
+    First reproduction: this function's very first hardware run reported the
+    SQS-TH-I neighbour's product ID for a query sent to the SQC485Iv2 DUT.
+    """
+    result: dict = {}
+    node_num = None
+
+    def on_receive(packet=None, interface=None):
+        if "cap" in result:
+            return
+        if packet.get("from") != node_num:
+            return  # a neighbour's reply (live or replayed) -- not ours
+        decoded = packet.get("decoded") or {}
+        raw = decoded.get("payload")
+        if raw and raw[:3] == sq.RPL_CAPABILITY:
+            result["cap"] = sq.parse_capability(raw)
+
+    pub.subscribe(on_receive, "meshtastic.receive")
+    try:
+        # Same cold-CDC-ACM retry as Device.connect(): a stale tail from before
+        # we opened the port fails the first handshake, and right after a
+        # uhubctl power cycle the OS can also report the just-enumerated node
+        # "Resource busy" for a moment. Both clear on retry.
+        iface = None
+        last = None
+        for _attempt in range(5):
+            try:
+                with serial.Serial(port, 115200, timeout=0.5) as raw:
+                    raw.reset_input_buffer()
+                    raw.reset_output_buffer()
+                time.sleep(0.3)
+                iface = meshtastic.serial_interface.SerialInterface(devPath=port)
+                iface.waitForConfig()
+                break
+            except Exception as exc:  # noqa: BLE001 — retry on anything, report the last
+                last = exc
+                if iface:
+                    iface.close()
+                    iface = None
+                time.sleep(1.0)
+        if iface is None:
+            raise DeviceError(f"could not connect to {port} after 5 attempts: {last}")
+        node_num = iface.getMyNodeInfo()["num"]
+        for portnum in (sq.PORTNUM, 258):
+            iface.sendData(
+                sq.CMD_CAPABILITY, destinationId=node_num, portNum=portnum, wantAck=False
+            )
+        deadline = time.time() + timeout
+        while time.time() < deadline and "cap" not in result:
+            time.sleep(0.05)
+        if "cap" not in result:
+            raise DeviceError(
+                f"{port}: no SQV? reply within {timeout}s (tried portnum "
+                f"{sq.PORTNUM} and 258)"
+            )
+        product_id = result["cap"].product_id
+        portnum = 258 if product_id == "SQS-TH-I" else sq.PORTNUM
+        return product_id, portnum
+    finally:
+        if iface is not None:
+            iface.close()
+        pub.unsubscribe(on_receive, "meshtastic.receive")
