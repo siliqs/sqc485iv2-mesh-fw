@@ -35,7 +35,7 @@ The `mcp-server/` package exposes ~32 MCP tools for device discovery, building, 
 - **userPrefs admin**: `userprefs_get`, `userprefs_set`, `userprefs_reset`, `userprefs_manifest`, `userprefs_testing_profile`
 - **Vendor escape hatches**: `esptool_*`, `nrfutil_*`, `picotool_*`
 
-Setup: `cd mcp-server && python3 -m venv .venv && .venv/bin/pip install -e '.[test]'`. The repo registers the server via `.mcp.json` — Claude Code picks it up automatically.
+Setup: `cd mcp-server && python3 -m venv .venv && .venv/bin/pip install -e '.[test]'`.
 
 See `mcp-server/README.md` for argument shapes and the **MCP Server & Hardware Test Harness** section of `.github/copilot-instructions.md` for agent usage rules (tool surface, fixture contract, firmware integration points, recovery playbooks).
 
@@ -47,7 +47,7 @@ Three test-and-diagnose workflows exist as slash commands:
 - **`/diagnose` / `/mcp-diagnose`** — read-only device health report
 - **`/repro` / `/mcp-repro`** — flakiness triage: re-run one test N times, diff firmware logs between passes and failures
 
-Bodies live in `.claude/commands/` and `.github/prompts/` respectively. `.claude/commands/README.md` is the index.
+Bodies live in `.github/prompts/`.
 
 ## Encryption at a glance
 
@@ -111,11 +111,9 @@ Sequence these; don't parallelize on the same port.
 | `test/`                           | Firmware unit tests (12 suites; `pio test -e native`)                                                                    |
 | `mcp-server/`                     | Python MCP server + pytest hardware integration tests                                                                    |
 | `mcp-server/tests/`               | Tiered pytest suite: `unit/`, `mesh/`, `telemetry/`, `monitor/`, `recovery/`, `ui/`, `fleet/`, `admin/`, `provisioning/` |
-| `.claude/commands/`               | Claude Code slash command bodies                                                                                         |
 | `.github/prompts/`                | Copilot prompt bodies (mirrors of the Claude Code ones)                                                                  |
 | `.github/copilot-instructions.md` | **Primary agent instructions — read this**                                                                               |
 | `.github/workflows/`              | CI pipelines                                                                                                             |
-| `.mcp.json`                       | MCP server registration for Claude Code                                                                                  |
 
 ## Recovery one-liners
 
