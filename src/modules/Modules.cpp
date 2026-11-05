@@ -10,6 +10,9 @@
 #ifdef SQC485IV2
 #include "modules/ModbusModule.h"
 #endif
+#ifdef SQS_TH_I
+#include "modules/SensorTHModule.h"
+#endif
 #if !MESHTASTIC_EXCLUDE_PKI
 #include "KeyVerificationModule.h"
 #endif
@@ -185,6 +188,12 @@ void setupModules()
     // shared firmware_core engine. Per-deployment behaviour comes from the config
     // blob rather than being compiled in.
     modbusModule = new ModbusModule();
+#endif
+#ifdef SQS_TH_I
+    // SQS-TH-I: periodic on-board HDC1080 temp/humidity -> mesh (versioned binary on
+    // portnum 257). Reads the sensor directly (bypasses the I2C telemetry autoscan,
+    // whose INA power-sensor probe aliases HDC1080's fixed 0x40 address).
+    sensorTHModule = new SensorTHModule();
 #endif
 #if HAS_SCREEN && !MESHTASTIC_EXCLUDE_CANNEDMESSAGES
     if (config.display.displaymode != meshtastic_Config_DisplayConfig_DisplayMode_COLOR) {

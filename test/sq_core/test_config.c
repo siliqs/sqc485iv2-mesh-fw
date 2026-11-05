@@ -29,7 +29,7 @@ void test_config_struct_abi_is_frozen(void)
     /* Changing this number means fielded devices factory-reset on upgrade.
        If that is intended, bump SQ_CONFIG_VERSION, ship a migration, and update
        the number here in the same commit. */
-    ASSERT_EQ(500, sizeof(sq_config_t));
+    ASSERT_EQ(704, sizeof(sq_config_t));
 
     /* Sub-struct sizes, so a mismatch above points straight at the culprit. */
     ASSERT_EQ(48, sizeof(sq_poll_t));
@@ -37,6 +37,8 @@ void test_config_struct_abi_is_frozen(void)
     ASSERT_EQ(16, sizeof(sq_modbus_t));
     ASSERT_EQ(8, sizeof(sq_tx_t));
     ASSERT_EQ(12, sizeof(sq_tunnel_t));
+    ASSERT_EQ(12, sizeof(sq_gw_map_entry_t));
+    ASSERT_EQ(204, sizeof(sq_gateway_reply_t));
 
     /* 4-byte alignment and no 64-bit members is what keeps the host layout
        identical to the ESP32-C3 one — which is what makes this test meaningful. */
@@ -45,14 +47,17 @@ void test_config_struct_abi_is_frozen(void)
 
 void test_config_limits_are_frozen(void)
 {
-    ASSERT_EQ(4, SQ_CONFIG_VERSION);
+    ASSERT_EQ(5, SQ_CONFIG_VERSION);
     ASSERT_EQ(8, SQ_MAX_POLLS);
     ASSERT_EQ(16, SQ_MAX_REGS);
     ASSERT_EQ(24, SQ_NAME_LEN);
+    ASSERT_EQ(16, SQ_MAX_GW_MAP_ENTRIES);
+    ASSERT_EQ(1, SQ_MIN_UPLINK_INTERVAL_S);
+    ASSERT_EQ(604800, SQ_MAX_UPLINK_INTERVAL_S);
 
     /* Capability handshake: the configurator gates its UI on these. */
     ASSERT_EQ(2, SQ_CAP_PROTO);
-    ASSERT_EQ(0x3F, SQ_FEATURES); /* tunnel|ble_power|rs485_term|poll_now|deep_sleep|get_config */
+    ASSERT_EQ(0xBF, SQ_FEATURES); /* tunnel|ble_power|rs485_term|poll_now|deep_sleep|get_config|gateway_reply */
 }
 
 /* ── defaults ─────────────────────────────────────────────────────────────── */
@@ -83,6 +88,12 @@ void test_config_defaults(void)
     ASSERT_FALSE(c.tunnel.enabled);
     ASSERT_EQ(0, c.tunnel.peer_node);
     ASSERT_EQ(20, c.tunnel.idle_gap_ms);
+
+    ASSERT_FALSE(c.gateway.transparent_enabled);
+    ASSERT_FALSE(c.gateway.aggregated_enabled);
+    ASSERT_EQ(1, c.gateway.aggregated_slave_addr);
+    ASSERT_EQ(3600, c.gateway.staleness_threshold_s);
+    ASSERT_EQ(0, c.gateway.map_count);
 
     /* The shipped example poll plan. poll[2] targets an absent slave on purpose:
        it is what demonstrates the fixed-length error frame. */

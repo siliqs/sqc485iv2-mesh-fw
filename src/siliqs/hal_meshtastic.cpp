@@ -10,7 +10,10 @@
  * Implements only the HAL functions the mesh module actually uses (serial, time,
  * store, power, led); radio/link are owned by Meshtastic, not the engine.
  */
-#ifdef SQC485IV2  // only build this HAL for the SQC485I board envs
+#if defined(SQC485IV2) || defined(SQS_TH_I)  // build this HAL for the SQC485I + SQS-Sensor envs
+// SQS-TH-I only needs hal_store_* (firmware_core config persistence, used for the
+// report interval); the RS485 hal_serial_* / BOARD / hal_led parts compile as unused
+// dead code (their ModbusModule callers aren't registered on the SQS build).
 
 #include <Arduino.h>
 #include <LittleFS.h>

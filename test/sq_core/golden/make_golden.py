@@ -11,7 +11,7 @@ Layout (little-endian), from config.h:
 
     off  size  field
       0     2  'S','Q'
-      2     1  version (2, 3 or 4)
+      2     1  version (2, 3, 4 or 5)
       3     1  flags   (bit0 RS485_OFF, bit1 TUNNEL_ON, bit2 CONFIRMED)
       4    16  device_name, NUL padded
      20     4  baud
@@ -26,6 +26,10 @@ Layout (little-endian), from config.h:
      37   6*n  polls: slave(1) function(1) reg_start(2) reg_count(2)
       -     5  v3+: tx dest_node(4) channel(1)
       -     6  v4+: tunnel peer_node(4) idle_gap_ms(2)
+      -     7  v5+: gateway gw_flags(1) aggregated_slave_addr(1)
+                    staleness_threshold_s(4) map_count(1)
+      -  12*m  v5+: map[m]: node_id(4) src_slave(1) src_func(1)
+                    src_reg_start(2) src_reg_count(2) virt_reg_offset(2)
       -     2  crc16 over everything before it
 
 Regenerate with:  python3 make_golden.py
@@ -39,6 +43,9 @@ HERE = pathlib.Path(__file__).parent
 FLAG_RS485_OFF = 0x01
 FLAG_TUNNEL_ON = 0x02
 FLAG_CONFIRMED = 0x04
+
+FLAG_GW_TRANSPARENT = 0x01
+FLAG_GW_AGGREGATED = 0x02
 
 
 def crc16(data: bytes) -> int:
@@ -68,6 +75,10 @@ def build(
     tx_channel=0,
     tunnel_peer=0,
     tunnel_idle_gap=20,
+    gw_flags=0,
+    gw_agg_slave=1,
+    gw_staleness_s=3600,
+    gw_map=(),
 ):
     body = bytearray()
     body += b"SQ"
@@ -86,6 +97,14 @@ def build(
         body += struct.pack("<I", tx_dest) + bytes([tx_channel])
     if version >= 4:
         body += struct.pack("<I", tunnel_peer) + struct.pack("<H", tunnel_idle_gap)
+    if version >= 5:
+        body += bytes([gw_flags, gw_agg_slave])
+        body += struct.pack("<I", gw_staleness_s)
+        body += bytes([len(gw_map)])
+        for node_id, src_slave, src_func, src_reg_start, src_reg_count, virt_reg_offset in gw_map:
+            body += struct.pack("<I", node_id)
+            body += bytes([src_slave, src_func])
+            body += struct.pack("<HHH", src_reg_start, src_reg_count, virt_reg_offset)
     body += struct.pack("<H", crc16(bytes(body)))
     return bytes(body)
 
@@ -94,8 +113,8 @@ def build(
 # defaults in firmware_core/config.c; a deliberate default change means updating
 # this file, an accidental one means a failing test.
 GOLDEN = {
-    "v4_defaults": build(
-        4,
+    "v5_defaults": build(
+        5,
         "SQC485I",
         [(1, 3, 0, 2), (1, 3, 8, 1), (9, 3, 0, 1)],
     ),
@@ -151,6 +170,41 @@ GOLDEN = {
         tunnel_peer=0x11223344,
         tunnel_idle_gap=50,
     ),
+    # v5 added the gateway Modbus-slave reply block (transparent + aggregated,
+    # staleness threshold, register map).
+    "v5": build(
+        5,
+        "V5NODE",
+        [(4, 3, 10, 2)],
+        flags=FLAG_CONFIRMED,
+        baud=57600,
+        parity=2,
+        response_timeout_ms=800,
+        retries=2,
+        poll_gap_ms=15,
+        uplink_interval_s=120,
+        deep_sleep=False,
+        tx_dest=0xAABBCCDD,
+        tx_channel=2,
+        gw_flags=FLAG_GW_TRANSPARENT | FLAG_GW_AGGREGATED,
+        gw_agg_slave=99,
+        gw_staleness_s=1800,
+        gw_map=[
+            (0x81B8A03C, 1, 3, 0, 2, 0),
+            (0x7D51BDB0, 5, 4, 100, 4, 2),
+        ],
+    ),
+    # INVALID on purpose: 17 map entries, one past SQ_MAX_GW_MAP_ENTRIES, but
+    # internally consistent (correct length, correct CRC) — proves the bounds
+    # check rejects on map_count itself, the field that would overflow
+    # gateway.map[].
+    "v5_map_overflow": build(
+        5,
+        "GWOVERFLOW",
+        [(1, 3, 0, 2)],
+        gw_flags=FLAG_GW_AGGREGATED,
+        gw_map=[(i, 1, 3, 0, 1, i) for i in range(17)],
+    ),
     # Upper bound: SQ_MAX_POLLS entries, each at SQ_MAX_REGS registers.
     "v4_max": build(
         4,
@@ -169,6 +223,25 @@ GOLDEN = {
         4,
         "OVERFLOW",
         [(i + 1, 3, i * 16, 2) for i in range(9)],
+    ),
+    # INVALID on purpose: uplink_interval_s = 0. Otherwise a perfectly formed blob
+    # (correct length, correct CRC) — proves the bounds check rejects on the
+    # interval field itself. 0 is the value that turns ModbusModule's runOnce()
+    # into a busy loop (ModbusModule has no clamp of its own).
+    "v4_interval_zero": build(
+        4,
+        "INTERVAL0",
+        [(1, 3, 0, 2)],
+        uplink_interval_s=0,
+    ),
+    # INVALID on purpose: uplink_interval_s past SQ_MAX_UPLINK_INTERVAL_S (604800)
+    # but nowhere near the int32-ms overflow point (~2,147,483) — proves the upper
+    # bound itself rejects, independent of the overflow it exists to stay clear of.
+    "v4_interval_too_large": build(
+        4,
+        "INTERVALHI",
+        [(1, 3, 0, 2)],
+        uplink_interval_s=700000,
     ),
 }
 

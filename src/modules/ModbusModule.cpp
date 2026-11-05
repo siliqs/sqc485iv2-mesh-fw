@@ -34,9 +34,11 @@
 extern "C" {
 #include "board_profile.h"  // BOARD.rs485_tx_echo (strip half-duplex TX echo)
 #include "config.h"         // sq_config_t, config_load/save, config_from_blob
+#include "gw_store.h"       // gw_store_put (gateway's cached remote telemetry)
 #include "hal/hal_serial.h" // hal_serial_init + raw write/read (USB↔RS485 bridge)
 #include "hal/hal_store.h"  // persist the BLE TX power (separate key, not the blob)
 #include "hal/hal_time.h"   // hal_millis (idle-gap framing for the RS485 tunnel)
+#include "modbus_slave.h"   // modbus_slave_poll (gateway's passive Modbus-slave responder)
 #include "poll.h"           // poll_collect_raw  (raw-forward payload)
 #include "sqcmd.h"          // sq_classify + the reply builders (host-tested, no state)
 void hal_led_idle_on(void); // meshtastic HAL (hal_meshtastic.cpp): keep the status LED on while idle
@@ -158,10 +160,12 @@ int32_t ModbusModule::runOnce()
 
     // Polling is gated by the config flag alone (g_cfg.rs485_enabled, below) — NOT by
     // the mesh role. This lets a CLIENT_MUTE node still poll: a "mute sensor" (Epic G
-    // Level 2, #8) that sends its own readings but does NOT relay for the mesh. A
-    // gateway is just CLIENT_MUTE with rs485_enabled=false, so it still stays idle at
-    // the rs485_enabled check below (which already supports re-enable without reboot).
+    // Level 2, #8) that sends its own readings but does NOT relay for the mesh.
     // (Was: force-disable whenever role==CLIENT_MUTE — that assumed CLIENT_MUTE==gateway.)
+    // Gateway Modbus-slave reply is a SEPARATE carve-out, checked below before this
+    // flag: transparent/aggregated mode takes the RS485 bus over for passive
+    // listening regardless of rs485_enabled, since a gateway with no local sensor of
+    // its own (rs485_enabled=false) still needs the bus to answer an external master.
 
     // Tunnel master: instead of polling, read raw frames off the local port and
     // forward them to the peer (its reply is written back in handleReceived). The
@@ -181,6 +185,24 @@ int32_t ModbusModule::runOnce()
             tunLen = 0;
         }
         return tunnelPump();
+    }
+
+    // Gateway Modbus-slave reply: answer an external RTU master on our own RS485 bus
+    // from gw_store's cached mesh telemetry, instead of actively polling a local
+    // sensor. Independent of rs485_enabled (see the comment above) and, like the
+    // tunnel above, takes the bus over entirely — passive listening and active
+    // master polling cannot share one bus at once, so this never falls through to
+    // the periodic poller below.
+    if (g_cfg.gateway.transparent_enabled || g_cfg.gateway.aggregated_enabled) {
+        if (firstTime) {
+            firstTime = false;
+            hal_serial_init(g_cfg.modbus.baud, g_cfg.modbus.parity, g_cfg.modbus.stop_bits);
+            LOG_INFO("ModbusModule: gateway Modbus-slave responder up %u 8N1 (transparent=%d, aggregated=%d slave=%u)",
+                     (unsigned)g_cfg.modbus.baud, (int)g_cfg.gateway.transparent_enabled, (int)g_cfg.gateway.aggregated_enabled,
+                     (unsigned)g_cfg.gateway.aggregated_slave_addr);
+        }
+        modbus_slave_poll(&g_cfg);
+        return 1; // re-enter immediately — the poll itself already blocked for one T3.5 gap
     }
 
     // RS485 polling turned off (e.g. no sensor wired) — stay idle, but keep checking so a config
@@ -428,11 +450,20 @@ ProcessMessage ModbusModule::handleReceived(const meshtastic_MeshPacket &mp)
         applyConfigBlob(b, n, mp.from); // applies + replies 'SQ!' with the apply status
         break;
 
-    // Our own 'SQ<' / 'SQ{' / 'SQ!' / 'SQV' replies, and raw-forward telemetry: not
-    // commands. Dropping them here is what stops a reply loop and a spurious NAK for
-    // every packet we send.
+    // Our own 'SQ<' / 'SQ{' / 'SQ!' / 'SQV' replies: not a command. Dropping it here
+    // is what stops a reply loop and a spurious NAK for every packet we send.
     case SQ_CMD_OWN_REPLY:
+        break;
+
+    // Not one of our own SQ-prefixed replies — a real remote node's raw-forward
+    // telemetry uplink (or anything else short/foreign we don't act on) lands here.
+    // Feed it to the gateway's telemetry cache so a later Modbus-slave query can
+    // answer from it. mp.from == 0 or == self is our OWN uplink looped back locally
+    // (not a remote node), so it must not be cached as if it were some other node's
+    // telemetry.
     case SQ_CMD_IGNORE:
+        if (mp.from != 0 && mp.from != self)
+            gw_store_put(&g_cfg.gateway, mp.from, b, n, hal_millis());
         break;
     }
 
@@ -715,13 +746,51 @@ void ModbusModule::applyBlePower(int dbm, bool persist)
         dbm = 0;
         break; // 0 dBm
     }
-    NimBLEDevice::setPower(lvl);
+    // NimBLEDevice::setPower(lvl) alone only touches ESP_BLE_PWR_TYPE_DEFAULT, which per
+    // esp_bt.h only applies to *future* advertising/scan/connections that haven't had their
+    // own power explicitly set — it does NOT retroactively change an already-running
+    // advertisement or an already-established connection's TX power (QC bug B5: "BLE 發射
+    // 功率無法調整" — the configurator is connected over BLE while testing this, so the
+    // live connection's own CONN_HDLn power is what actually needs to change, and DEFAULT
+    // alone never touches it). Set ADV explicitly too, since range while unconnected/pairing
+    // is governed by that type, not DEFAULT, once advertising is already running.
+    esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_DEFAULT, lvl);
+    esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_ADV, lvl);
+    // ESP_BLE_PWR_TYPE_CONN_HDL0..8 index the *actual* BT controller connection handle
+    // (esp_bt.h), not "the connection" in the abstract — hardcoding HDL0 only works if
+    // that happens to be the live link's handle. Measured on real hardware: after a
+    // disconnect/reconnect the handle moved to 1, and HDL0 silently became a no-op
+    // (esp_ble_tx_power_get on an unset handle falls back to reading DEFAULT, which is
+    // why an earlier version of this fix looked like it was working when it wasn't —
+    // the readback matched DEFAULT either way). Reading the peer's real handle and
+    // targeting that type is the only correct approach.
+    NimBLEServer *srv = NimBLEDevice::getServer();
+    bool haveConnType = false;
+    esp_ble_power_type_t connType = ESP_BLE_PWR_TYPE_DEFAULT;
+    if (srv && srv->getConnectedCount() > 0) {
+        uint16_t handle = srv->getPeerInfo((size_t)0).getConnHandle();
+        if (handle <= ESP_BLE_PWR_TYPE_CONN_HDL8) {
+            connType = (esp_ble_power_type_t)handle;
+            esp_ble_tx_power_set(connType, lvl);
+            haveConnType = true;
+        } else {
+            LOG_WARN("ModbusModule: BLE conn handle %u out of CONN_HDL0..8 range, can't set its TX power", (unsigned)handle);
+        }
+    }
     if (persist) {
         int8_t v = (int8_t)dbm;
         hal_store_set("blepwr", &v, sizeof(v));
         hal_store_commit();
     }
-    LOG_INFO("ModbusModule: BLE TX power %d dBm%s", dbm, persist ? " (saved)" : "");
+    if (haveConnType) {
+        LOG_INFO("ModbusModule: BLE TX power %d dBm%s (readback default=%d adv=%d conn=%d)", dbm, persist ? " (saved)" : "",
+                 (int)esp_ble_tx_power_get(ESP_BLE_PWR_TYPE_DEFAULT), (int)esp_ble_tx_power_get(ESP_BLE_PWR_TYPE_ADV),
+                 (int)esp_ble_tx_power_get(connType));
+    } else {
+        LOG_INFO("ModbusModule: BLE TX power %d dBm%s (readback default=%d adv=%d, no active connection)", dbm,
+                 persist ? " (saved)" : "", (int)esp_ble_tx_power_get(ESP_BLE_PWR_TYPE_DEFAULT),
+                 (int)esp_ble_tx_power_get(ESP_BLE_PWR_TYPE_ADV));
+    }
 }
 
 #endif // SQC485IV2

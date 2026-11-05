@@ -59,6 +59,21 @@ void mock_serial_set_exception_code(uint8_t code);
    an otherwise-valid exception (or any other frame) that failed on the wire. */
 void mock_serial_corrupt_crc(bool on);
 
+/* Flip a byte of the TX echo before the engine reads it back (only meaningful
+   with BOARD.rs485_tx_echo on). Simulates bus noise/collision landing on our
+   own echoed request rather than the slave's reply. */
+void mock_serial_corrupt_echo(bool on);
+
+/* Put an external master's request on the wire for a slave under test (e.g.
+   modbus_slave.c) to read via hal_serial_read() — the mirror image of
+   mock_serial_set_mode()/mock_serial_script() above, which script how a
+   simulated slave answers requests WE send. Also switches hal_serial_write()
+   into slave-echo mode: a write is treated as our own reply (echoed back if
+   BOARD.rs485_tx_echo) rather than a master's request needing a synthesized
+   answer. One call delivers one frame; call again before the next poll for a
+   second frame — this mock has no notion of a timing gap between calls. */
+void mock_serial_inject(const uint8_t *frame, size_t len);
+
 /* Captured transmissions. */
 size_t mock_serial_tx_count(void);                    /* number of hal_serial_write() calls */
 const uint8_t *mock_serial_tx(size_t i, size_t *len); /* NULL when i is out of range */

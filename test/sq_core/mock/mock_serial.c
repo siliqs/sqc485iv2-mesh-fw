@@ -30,10 +30,18 @@ static uint16_t s_regs[REG_FILE];
 static bool s_reg_set[REG_FILE];
 static uint8_t s_exc_code = 0x02;
 static bool s_corrupt_crc;
+static bool s_corrupt_echo;
 
 static uint8_t s_tx[MAX_ATTEMPTS][MAX_FRAME];
 static size_t s_tx_len[MAX_ATTEMPTS];
 static size_t s_tx_count;
+
+/* Set by mock_serial_inject(): the code under test is a SLAVE answering an
+   external master (modbus_slave.c), not a master talking to a simulated
+   slave. In this mode hal_serial_write() must not synthesize a fake master
+   response the way it does below — there is no simulated master, only
+   whatever mock_serial_inject() put on the wire. */
+static bool s_slave_mode;
 
 static char s_log[512];
 static size_t s_log_len;
@@ -127,6 +135,20 @@ int hal_serial_write(const uint8_t *buf, size_t len)
     }
     s_tx_count++;
 
+    if (s_slave_mode) {
+        /* This write is OUR reply, not a master's request — echo it back if
+           the wire does that (so the caller's own echo-drain is exercised),
+           but do not synthesize a response: there is no simulated master
+           here, only what mock_serial_inject() explicitly put on the wire. */
+        s_rx_len = s_rx_pos = 0;
+        if (BOARD.rs485_tx_echo) {
+            size_t n = len < sizeof(s_rx) ? len : sizeof(s_rx);
+            memcpy(s_rx, buf, n);
+            s_rx_len = n;
+        }
+        return (int)len;
+    }
+
     if (len < 8)
         return (int)len; /* not a complete RTU request — stay silent */
 
@@ -139,6 +161,8 @@ int hal_serial_write(const uint8_t *buf, size_t len)
     if (BOARD.rs485_tx_echo) { /* the line echoes what we transmitted */
         memcpy(s_rx, buf, len);
         s_rx_len = len;
+        if (s_corrupt_echo && s_rx_len)
+            s_rx[s_rx_len - 1] ^= 0xFF; /* bus noise/collision on our own echo */
     }
 
     uint8_t rsp[MAX_FRAME];
@@ -184,8 +208,27 @@ void mock_serial_reset(void)
     s_log[0] = '\0';
     s_exc_code = 0x02;
     s_corrupt_crc = false;
+    s_corrupt_echo = false;
+    s_slave_mode = false;
     memset(s_reg_set, 0, sizeof(s_reg_set));
     memset(s_tx_len, 0, sizeof(s_tx_len));
+}
+
+/* Put an external master's request straight on the wire for a slave (e.g.
+   modbus_slave.c) to read via hal_serial_read() — the mirror image of the
+   master-side mock_serial_set_mode()/script above, which instead scripts how
+   a simulated slave answers OUR requests. Replaces whatever is currently
+   unread in the RX buffer (one call = one frame sitting on the bus ready to
+   be read); call again before the next poll to deliver a second frame, since
+   this mock has no notion of a timing gap between two back-to-back calls.
+   Also switches hal_serial_write() into slave-echo mode — see s_slave_mode. */
+void mock_serial_inject(const uint8_t *frame, size_t len)
+{
+    s_slave_mode = true;
+    size_t n = len < sizeof(s_rx) ? len : sizeof(s_rx);
+    memcpy(s_rx, frame, n);
+    s_rx_len = n;
+    s_rx_pos = 0;
 }
 
 void mock_serial_set_mode(mock_rsp_t mode)
@@ -220,6 +263,11 @@ void mock_serial_set_exception_code(uint8_t code)
 void mock_serial_corrupt_crc(bool on)
 {
     s_corrupt_crc = on;
+}
+
+void mock_serial_corrupt_echo(bool on)
+{
+    s_corrupt_echo = on;
 }
 
 size_t mock_serial_tx_count(void)

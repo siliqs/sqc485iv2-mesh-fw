@@ -93,7 +93,7 @@ void Channels::initDefaultLoraConfig()
 #ifdef USERPREFS_LORACONFIG_CHANNEL_NUM
     loraConfig.channel_num = USERPREFS_LORACONFIG_CHANNEL_NUM;
 #endif
-#ifdef SQC485IV2
+#if defined(SQC485IV2) || defined(SQS_TH_I)
     // Siliqs SQC485Iv2: ship the Taiwan DTS-certified radio profile out of the box
     // (single fixed 922.5 MHz channel, BW500 / SF9 / CR4:5). This MUST be applied here
     // — initDefaultLoraConfig() is the LoRa-config authority and runs AFTER
